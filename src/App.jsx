@@ -3,9 +3,10 @@ import { AuthProvider } from './context/AuthContext'
 import { ScrollProvider } from './context/ScrollContext'
 import { useTheme } from './hooks/useTheme'
 import AppRouter from './router/AppRouter'
+import { Analytics } from "@vercel/analytics/react"
 
 function App() {
-  // Inicializar el tema automático basado en preferencias del sistema
+
   useTheme()
 
   return (
@@ -13,6 +14,7 @@ function App() {
       <AuthProvider>
         <ScrollProvider>
           <AppRouter />
+          <Analytics />
         </ScrollProvider>
       </AuthProvider>
     </BrowserRouter>
