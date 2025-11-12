@@ -5,7 +5,8 @@ import LogoutModal from '../../components/LogoutModal'
 import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { getData, postData, patchData, updateData, deleteData } from '../../services/api'
+import { getData, postData, patchData, updateData, deleteData, getClientBranches } from '../../services/api'
+import { normalizeBranchList, denormalizeBranchCreate, denormalizeBranchUpdate } from '../../services/normalizers'
 import { validateForm, isRequired, isValidEmail, isValidPassword } from '../../utils/validation'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../../constants'
 import logger from '../../utils/logger'
@@ -22,7 +23,8 @@ const ClientAdminDashboard = () => {
   const [formData, setFormData] = useState({
     nombre: '',
     email: '',
-    password: ''
+    password: '',
+    location: ''
   })
   const [errors, setErrors] = useState({})
   const [sucursales, setSucursales] = useState([])
@@ -73,44 +75,23 @@ const ClientAdminDashboard = () => {
         
         // Obtener client_id del usuario autenticado
         const user = JSON.parse(localStorage.getItem('user') || '{}')
-        
-        // Usar el campo 'id' del usuario (no el _id de MongoDB)
         const clientId = user.id
         
         if (!clientId) {
           throw new Error('Client ID no disponible')
         }
         
-        // Llamar al endpoint GET /client/{client_id}/list
-        const data = await getData(`/client/${clientId}/list`)
+        // Llamar al endpoint GET /client/{client_id}/branches
+        const data = await getClientBranches(clientId)
         logger.info('Cargando sucursales para client:', clientId)
         
-        // Normalizar respuesta - el backend devuelve { branch: [...] }
-        let sucursalesArray = []
-        if (Array.isArray(data)) {
-          sucursalesArray = data
-        } else if (data && Array.isArray(data.branch)) {
-          // El backend devuelve { branch: [...] }
-          sucursalesArray = data.branch
-        } else if (data && Array.isArray(data.branches)) {
-          sucursalesArray = data.branches
-        } else if (data && Array.isArray(data.data)) {
-          sucursalesArray = data.data
-        } else if (data && data.data && !Array.isArray(data.data)) {
-          // Si data.data es un objeto único, convertirlo en array
-          sucursalesArray = [data.data]
-        }
-        
-        // Normalizar campos de cada sucursal
-        sucursalesArray = sucursalesArray.map((sucursal, index) => {
-          return {
-            id: sucursal.id || sucursal._id || sucursal.branch_id || index.toString(),
-            nombre: sucursal.name || sucursal.nombre || sucursal.branch_name || '',
-            email: sucursal.email || sucursal.correo || '',
-            // Agregar otros campos que el backend devuelva
-            ...sucursal
-          }
-        })
+        // Normalizar respuesta usando normalizeBranchList
+        const sucursalesArray = normalizeBranchList(data).map(sucursal => ({
+          id: sucursal.id,
+          nombre: sucursal.name,
+          email: sucursal.email,
+          location: sucursal.location
+        }))
         
         setSucursales(sucursalesArray)
         logger.info('Sucursales cargadas exitosamente:', sucursalesArray.length)
@@ -126,7 +107,7 @@ const ClientAdminDashboard = () => {
   }, [])
 
   const handleAddBranch = () => {
-    setFormData({ nombre: '', email: '', password: '' })
+    setFormData({ nombre: '', email: '', password: '', location: '' })
     setErrors({})
     setIsAddModalOpen(true)
   }
@@ -136,7 +117,8 @@ const ClientAdminDashboard = () => {
     setFormData({
       nombre: sucursal.nombre,
       email: sucursal.email,
-      password: ''
+      password: '',
+      location: sucursal.location || ''
     })
     setErrors({})
     setIsEditModalOpen(true)
@@ -149,7 +131,7 @@ const ClientAdminDashboard = () => {
 
   const handleCloseAddModal = () => {
     setIsAddModalOpen(false)
-    setFormData({ nombre: '', email: '', password: '' })
+    setFormData({ nombre: '', email: '', password: '', location: '' })
     setErrors({})
     setShowPassword(false)
   }
@@ -157,7 +139,7 @@ const ClientAdminDashboard = () => {
   const handleCloseEditModal = () => {
     setIsEditModalOpen(false)
     setSelectedBranch(null)
-    setFormData({ nombre: '', email: '', password: '' })
+    setFormData({ nombre: '', email: '', password: '', location: '' })
     setErrors({})
     setShowPassword(false)
   }
@@ -217,13 +199,14 @@ const ClientAdminDashboard = () => {
         throw new Error('Client Admin ID no disponible')
       }
       
-      // Preparar datos para el backend
-      const branchData = {
+      // Usar denormalizer para preparar datos
+      const branchData = denormalizeBranchCreate({
         name: formData.nombre,
         email: formData.email,
         password: formData.password,
-        client_admin_id: clientAdminId
-      }
+        clientAdminId: clientAdminId,
+        location: formData.location || undefined // Opcional
+      })
       
       
       // Llamar al endpoint POST /branch/
@@ -231,22 +214,14 @@ const ClientAdminDashboard = () => {
       logger.event('BRANCH_CREATED', { nombre: formData.nombre })
       
       // Recargar lista de sucursales
-      const data = await getData(`/client/${clientAdminId}/list`)
+      const data = await getClientBranches(clientAdminId)
       
-      // Normalizar respuesta
-      let sucursalesArray = []
-      if (Array.isArray(data)) {
-        sucursalesArray = data
-      } else if (data && Array.isArray(data.branch)) {
-        sucursalesArray = data.branch
-      }
-      
-      // Normalizar campos
-      sucursalesArray = sucursalesArray.map((sucursal, index) => ({
-        id: sucursal.id || sucursal._id || sucursal.branch_id || index.toString(),
-        nombre: sucursal.name || sucursal.nombre || sucursal.branch_name || '',
-        email: sucursal.email || sucursal.correo || '',
-        ...sucursal
+      // Normalizar usando normalizeBranchList
+      const sucursalesArray = normalizeBranchList(data).map(sucursal => ({
+        id: sucursal.id,
+        nombre: sucursal.name,
+        email: sucursal.email,
+        location: sucursal.location
       }))
       
       setSucursales(sucursalesArray)
@@ -277,38 +252,27 @@ const ClientAdminDashboard = () => {
         throw new Error('Client Admin ID no disponible')
       }
       
-      // Preparar datos para actualizar
-      const updateBranchData = {
+      // Usar denormalizer para preparar datos de actualización
+      const updateBranchData = denormalizeBranchUpdate({
         name: formData.nombre,
-        email: formData.email
-      }
-      
-      // Solo incluir password si se proporcionó uno nuevo
-      if (formData.password && formData.password.trim() !== '') {
-        updateBranchData.password = formData.password
-      }
+        email: formData.email,
+        password: formData.password && formData.password.trim() !== '' ? formData.password : undefined,
+        location: formData.location || undefined // Opcional
+      })
       
       // Llamar al endpoint PATCH /branch/{id}
       await patchData(`/branch/${selectedBranch.id}`, updateBranchData)
       logger.event('BRANCH_UPDATED', { id: selectedBranch.id })
       
       // Recargar lista de sucursales
-      const data = await getData(`/client/${clientAdminId}/list`)
+      const data = await getClientBranches(clientAdminId)
       
-      // Normalizar respuesta
-      let sucursalesArray = []
-      if (Array.isArray(data)) {
-        sucursalesArray = data
-      } else if (data && Array.isArray(data.branch)) {
-        sucursalesArray = data.branch
-      }
-      
-      // Normalizar campos
-      sucursalesArray = sucursalesArray.map((sucursal, index) => ({
-        id: sucursal.id || sucursal._id || sucursal.branch_id || index.toString(),
-        nombre: sucursal.name || sucursal.nombre || sucursal.branch_name || '',
-        email: sucursal.email || sucursal.correo || '',
-        ...sucursal
+      // Normalizar usando normalizeBranchList
+      const sucursalesArray = normalizeBranchList(data).map(sucursal => ({
+        id: sucursal.id,
+        nombre: sucursal.name,
+        email: sucursal.email,
+        location: sucursal.location
       }))
       
       setSucursales(sucursalesArray)
@@ -332,22 +296,14 @@ const ClientAdminDashboard = () => {
       // Recargar lista de sucursales
       const user = JSON.parse(localStorage.getItem('user') || '{}')
       const clientAdminId = user.id
-      const data = await getData(`/client/${clientAdminId}/list`)
+      const data = await getClientBranches(clientAdminId)
       
-      // Normalizar respuesta
-      let sucursalesArray = []
-      if (Array.isArray(data)) {
-        sucursalesArray = data
-      } else if (data && Array.isArray(data.branch)) {
-        sucursalesArray = data.branch
-      }
-      
-      // Normalizar campos
-      sucursalesArray = sucursalesArray.map((sucursal, index) => ({
-        id: sucursal.id || sucursal._id || sucursal.branch_id || index.toString(),
-        nombre: sucursal.name || sucursal.nombre || sucursal.branch_name || '',
-        email: sucursal.email || sucursal.correo || '',
-        ...sucursal
+      // Normalizar usando normalizeBranchList
+      const sucursalesArray = normalizeBranchList(data).map(sucursal => ({
+        id: sucursal.id,
+        nombre: sucursal.name,
+        email: sucursal.email,
+        location: sucursal.location
       }))
       
       setSucursales(sucursalesArray)
@@ -641,6 +597,35 @@ const ClientAdminDashboard = () => {
             )}
           </div>
 
+          {/* Campo Ubicación */}
+          <div className="relative">
+            <input
+              type="text"
+              id="location"
+              name="location"
+              value={formData.location}
+              onChange={handleInputChange}
+              className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                errors.location 
+                  ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                  : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+              }`}
+            />
+            <label 
+              htmlFor="location" 
+              className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                formData.location 
+                  ? 'top-2 text-xs' 
+                  : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+              }`}
+            >
+              Ubicación
+            </label>
+            {errors.location && (
+              <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.location}</p>
+            )}
+          </div>
+
           {/* Botón Crear */}
           <button
             type="submit"
@@ -770,6 +755,35 @@ const ClientAdminDashboard = () => {
             </div>
             {errors.password && (
               <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.password}</p>
+            )}
+          </div>
+
+          {/* Campo Ubicación */}
+          <div className="relative">
+            <input
+              type="text"
+              id="edit-location"
+              name="location"
+              value={formData.location}
+              onChange={handleInputChange}
+              className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                errors.location 
+                  ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                  : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+              }`}
+            />
+            <label 
+              htmlFor="edit-location" 
+              className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                formData.location 
+                  ? 'top-2 text-xs' 
+                  : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+              }`}
+            >
+              Ubicación
+            </label>
+            {errors.location && (
+              <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.location}</p>
             )}
           </div>
 

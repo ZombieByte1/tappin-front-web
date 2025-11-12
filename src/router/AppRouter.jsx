@@ -92,11 +92,31 @@ const AppRouter = () => {
           }
         />
 
-        {/* Detalles del hijo */}
+        {/* Detalles del hijo - Parent */}
         <Route
           path="/parent/child/:childId"
           element={
             <ProtectedRoute allowedRoles={[ROLES.PARENT]}>
+              <ChildDetails />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Dashboard Staff - Usa el mismo componente que Parent */}
+        <Route
+          path="/staff"
+          element={
+            <ProtectedRoute allowedRoles={[ROLES.STAFF]}>
+              <ParentDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Detalles del estudiante - Staff */}
+        <Route
+          path="/staff/student/:childId"
+          element={
+            <ProtectedRoute allowedRoles={[ROLES.STAFF]}>
               <ChildDetails />
             </ProtectedRoute>
           }

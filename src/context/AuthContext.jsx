@@ -42,7 +42,8 @@ export const AuthProvider = ({ children }) => {
     SUPER_ADMIN: 'super_admin',
     BRANCH: 'branch',
     CLIENT_ADMIN: 'client_admin',
-    PARENT: 'parent'
+    PARENT: 'parent',
+    STAFF: 'staff'
   }
 
   const login = (userData) => {

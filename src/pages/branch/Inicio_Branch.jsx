@@ -183,7 +183,7 @@ const BranchDashboard = () => {
               </button>
             </div>
 
-            {/* Card de Padres */}
+            {/* Card de Padres - Staff */}
             <div className="bg-white dark:bg-[#2a2b2e] rounded-xl sm:rounded-2xl p-4 sm:p-5 md:p-6 border border-gray-200 dark:border-[#3a3a3c] hover:border-primary dark:hover:border-primary transition-all duration-300 shadow-sm hover:shadow-lg animate-slideIn" style={{ animationDelay: '0.2s' }}>
               <div className="flex items-start gap-3 sm:gap-4 mb-3 sm:mb-4">
                 <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -203,10 +203,10 @@ const BranchDashboard = () => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <h3 className="text-light-text dark:text-dark-text text-lg sm:text-xl font-semibold mb-1.5 sm:mb-2">
-                    Padres
+                    Padres - Staff
                   </h3>
                   <p className="text-light-text-secondary dark:text-dark-text-secondary text-xs sm:text-sm leading-relaxed">
-                    Gestionar padres de familia
+                    Gestión de padres y staff
                   </p>
                 </div>
               </div>
@@ -214,7 +214,7 @@ const BranchDashboard = () => {
                 onClick={handlePadresClick}
                 className="w-full sm:w-auto bg-primary hover:bg-primary-dark text-black font-semibold px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg transition-all duration-200 text-xs sm:text-sm hover:scale-105 active:scale-95"
               >
-                Ver padres
+                Gestionar
               </button>
             </div>
 

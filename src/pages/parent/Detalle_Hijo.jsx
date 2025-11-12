@@ -2,13 +2,18 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Modal from '../../components/Modal'
 import Toast from '../../components/Toast'
-import { getData, patchData } from '../../services/api'
+import { getStudentById, updateStudentById, getTransactionHistory } from '../../services/api'
+import { normalizeStudent, denormalizeStudentUpdate, normalizeTransactionList } from '../../services/normalizers'
 import { validateForm, isRequired } from '../../utils/validation'
+import { useAuth } from '../../context/AuthContext'
 import logger from '../../utils/logger'
 
 const ChildDetails = () => {
   const navigate = useNavigate()
   const { childId } = useParams()
+  const { user } = useAuth()
+  // Convertir childId a número para comparar con el ID del hijo
+  const numericChildId = childId ? Number(childId) : null
   const [isScrolled, setIsScrolled] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [isDevModalOpen, setIsDevModalOpen] = useState(false)
@@ -49,101 +54,61 @@ const ChildDetails = () => {
     return () => container.removeEventListener('scroll', handleScroll)
   }, [])
 
-  // Obtener datos del hijo desde la lista de parent (localStorage o state)
+  // Obtener datos del hijo usando el endpoint directo
   useEffect(() => {
-    const loadChildFromParentList = async () => {
-      // Implement retries because right after creating a child the parent list
-      // may not reflect it immediately. We'll retry a few times before
-      // showing an error. While retrying we keep isLoading=true so the
-      // spinner is shown instead of the error page.
-  // Aumentamos intentos y delay para aguantar la latencia del backend
-  // justo después de la creación de un hijo. 30 intentos x 500ms = 15s
-  const MAX_ATTEMPTS = 30
-  const RETRY_DELAY_MS = 500
-
+    const loadChildData = async () => {
       setIsLoading(true)
       setIsLoadingHistory(true)
 
       try {
-        // Obtener parent id
-        const parentId = JSON.parse(localStorage.getItem('user') || '{}')?.id
-        if (!parentId) {
-          throw new Error('Parent ID no disponible')
+        // Convertir childId a número
+        const numericChildId = parseInt(childId, 10)
+        
+        if (isNaN(numericChildId)) {
+          throw new Error('ID de estudiante inválido')
         }
 
-        let attempt = 0
-        let foundChild = null
+        logger.info('=== CARGANDO DATOS DEL ESTUDIANTE ===')
+        logger.info('Student ID:', numericChildId)
 
-        while (attempt < MAX_ATTEMPTS && !foundChild) {
-          attempt += 1
-          try {
-            const data = await getData(`/parent/${parentId}/list`)
-            logger.info(`Intento ${attempt}: Cargando lista de hijos para parent: ${parentId}`)
+        // Obtener datos del estudiante directamente por ID
+        const studentData = await getStudentById(numericChildId)
+        logger.info('Datos del estudiante recibidos:', studentData)
 
-            let hijosArray = []
-            if (Array.isArray(data)) {
-              hijosArray = data
-            } else if (data && Array.isArray(data.data)) {
-              hijosArray = data.data
-            }
+        // Normalizar los datos usando normalizeStudent
+        const normalizedStudent = normalizeStudent(studentData)
 
-            const child = hijosArray.find((h, idx) => {
-              const uniqueId = h.id || h._id || idx.toString()
-              return uniqueId === childId
-            })
-
-            if (child) {
-              foundChild = child
-              logger.debug('Hijo encontrado en intento', attempt)
-              break
-            }
-
-            // Si no lo encontramos, esperar antes de reintentar
-            if (attempt < MAX_ATTEMPTS) {
-              await new Promise(res => setTimeout(res, RETRY_DELAY_MS))
-            }
-          } catch (err) {
-            // Si falla la petición, esperar y reintentar
-            logger.warn('Error al obtener lista de hijos (reintentando):', err)
-            if (attempt < MAX_ATTEMPTS) {
-              await new Promise(res => setTimeout(res, RETRY_DELAY_MS))
-            }
-          }
+        // Convertir al formato esperado por el componente
+        const childData = {
+          id: normalizedStudent.id,
+          name: normalizedStudent.name,
+          rfid: normalizedStudent.rfid,
+          creditos: normalizedStudent.credits,
+          tope: normalizedStudent.tope,
+          state: normalizedStudent.state,
+          parent_id: normalizedStudent.parentId,
+          staff_id: normalizedStudent.staffId,
+          school: normalizedStudent.school,
+          course: normalizedStudent.course
         }
 
-        if (!foundChild) {
-          throw new Error('Hijo no encontrado después de varios intentos')
-        }
-
-        const child = foundChild
-
-        // Normalizar los datos del hijo
-        const normalizedChild = {
-          id: child.id || child._id || child.rfid_id,
-          name: child.name || child.nombre || '',
-          rfid: child.rfid_id || child.rfid || 'Pendiente',
-          creditos: child.credits || child.creditos || 0,
-          tope: child.tope || child.limit || 0,
-          state: child.state || false,
-          parent_id: child.parent_id || '',
-          school: child.school || child.escuela || '',
-          course: child.course || child.curso || ''
-        }
-
-        setChildData(normalizedChild)
+        setChildData(childData)
         logger.info('Datos del hijo cargados exitosamente')
 
         // Cargar historial si tiene rfid válido
-        if (normalizedChild.rfid && normalizedChild.rfid !== 'Pendiente') {
-          fetchHistorial(normalizedChild.rfid)
+        if (childData.rfid && childData.rfid !== 'Pendiente') {
+          fetchHistorial(childData.rfid)
         } else {
           setIsLoadingHistory(false)
           logger.info('RFID pendiente, no se puede cargar historial')
         }
 
       } catch (error) {
-        logger.error('Error al cargar datos del hijo tras reintentos:', error)
-        // dejamos childData como null; se mostrará el mensaje de error
+        logger.error('=== ERROR AL CARGAR DATOS DEL ESTUDIANTE ===')
+        logger.error('Error completo:', error)
+        logger.error('Response data:', error.response?.data)
+        logger.error('Response status:', error.response?.status)
+        
         setChildData(null)
         setIsLoadingHistory(false)
       } finally {
@@ -152,7 +117,7 @@ const ChildDetails = () => {
     }
 
     if (childId) {
-      loadChildFromParentList()
+      loadChildData()
     }
   }, [childId])
 
@@ -161,18 +126,11 @@ const ChildDetails = () => {
     try {
       setIsLoadingHistory(true)
       
-      const transactions = await getData(`/transactions/${rfid}`)
+      const transactions = await getTransactionHistory(rfid, 50)
       logger.info('Cargando historial de transacciones para RFID:', rfid)
       
       // Normalizar historial
-      let historialArray = []
-      if (Array.isArray(transactions)) {
-        historialArray = transactions
-      } else if (transactions && Array.isArray(transactions.data)) {
-        historialArray = transactions.data
-      } else if (transactions && Array.isArray(transactions.transactions)) {
-        historialArray = transactions.transactions
-      }
+      const historialArray = normalizeTransactionList(transactions)
       
       setHistorial(historialArray)
       logger.info('Historial cargado exitosamente:', historialArray.length)
@@ -185,7 +143,8 @@ const ChildDetails = () => {
   }
 
   const handleGoBack = () => {
-    navigate('/parent')
+    const backRoute = user?.role === 'staff' ? '/staff' : '/parent'
+    navigate(backRoute)
   }
 
   const closeToast = () => {
@@ -254,20 +213,25 @@ const ChildDetails = () => {
     try {
       setIsSubmitting(true)
       
-      // Convertir rfid a string para asegurar el formato correcto
-      const rfid = String(childData.rfid)
+      // Usar el ID numérico del estudiante
+      const studentId = childData.id
 
       logger.info('=== ACTUALIZANDO DATOS DEL HIJO ===')
-      logger.info('RFID:', rfid)
+      logger.info('Student ID:', studentId)
+      logger.info('RFID:', childData.rfid)
 
-      // Construir payload solo con los campos que el usuario haya completado
-      const updatePayload = {}
-      if (editFormData.nombre && editFormData.nombre.trim() !== '') updatePayload.name = editFormData.nombre
-      if (editFormData.tope && editFormData.tope.trim() !== '') updatePayload.tope = Number(editFormData.tope)
-      if (editFormData.school && editFormData.school.trim() !== '') updatePayload.school = editFormData.school
-      if (editFormData.course && editFormData.course.trim() !== '') updatePayload.course = editFormData.course
+      // Construir objeto con los datos del formulario
+      const formUpdates = {
+        name: editFormData.nombre && editFormData.nombre.trim() !== '' ? editFormData.nombre : undefined,
+        limit: editFormData.tope && editFormData.tope.trim() !== '' ? Number(editFormData.tope) : undefined,
+        school: editFormData.school && editFormData.school.trim() !== '' ? editFormData.school : undefined,
+        course: editFormData.course && editFormData.course.trim() !== '' ? editFormData.course : undefined
+      }
 
-      logger.info('Payload para /students/{rfid}:', JSON.stringify(updatePayload))
+      // Usar denormalizer para convertir al formato del backend
+      const updatePayload = denormalizeStudentUpdate(formUpdates)
+
+      logger.info('Payload para /students/{id}:', JSON.stringify(updatePayload))
 
       if (Object.keys(updatePayload).length === 0) {
         // Nada que actualizar
@@ -276,22 +240,28 @@ const ChildDetails = () => {
         return
       }
 
-      const response = await patchData(`/students/${rfid}`, updatePayload)
+      // Actualizar usando ID en lugar de RFID
+      const response = await updateStudentById(studentId, updatePayload)
       logger.info('Respuesta de actualización:', response)
       
       // Actualizar datos localmente después de la respuesta exitosa
       const updatedChild = {
         ...childData,
         // Solo sobreescribir los campos que fueron enviados
-        name: updatePayload.name ?? childData.name,
-        tope: updatePayload.tope ?? childData.tope,
-        school: updatePayload.school ?? childData.school,
-        course: updatePayload.course ?? childData.course
+        name: formUpdates.name ?? childData.name,
+        tope: formUpdates.limit ?? childData.tope,
+        school: formUpdates.school ?? childData.school,
+        course: formUpdates.course ?? childData.course
       }
       
       setChildData(updatedChild)
       
-      logger.event('CHILD_UPDATED', { rfid, name: editFormData.nombre, tope: editFormData.tope })
+      logger.event('CHILD_UPDATED', { 
+        id: studentId, 
+        rfid: childData.rfid, 
+        name: editFormData.nombre, 
+        tope: editFormData.tope 
+      })
       logger.info('=== ACTUALIZACIÓN COMPLETADA ===')
       
       // Mostrar toast de éxito

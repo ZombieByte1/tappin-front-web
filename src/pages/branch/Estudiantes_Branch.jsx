@@ -6,7 +6,8 @@ import LogoutModal from '../../components/LogoutModal'
 import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { getData, postData, patchData } from '../../services/api'
+import { getData, postData, patchData, searchStudents, activateStudent, addCredits, deleteStudent } from '../../services/api'
+import { normalizeStudentList } from '../../services/normalizers'
 import api from '../../services/api'
 import { RFID_SCAN_DELAY } from '../../constants'
 import logger from '../../utils/logger'
@@ -20,6 +21,7 @@ const EstudiantesBranch = () => {
   const [isActivateModalOpen, setIsActivateModalOpen] = useState(false)
   const [isRechargeModalOpen, setIsRechargeModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [selectedEstudiante, setSelectedEstudiante] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [showOnlyPending, setShowOnlyPending] = useState(false)
@@ -69,39 +71,31 @@ const EstudiantesBranch = () => {
         const user = JSON.parse(localStorage.getItem('user') || '{}')
         const branchId = user.id
         
+        logger.info('Usuario branch:', { user, branchId })
+        
         if (!branchId) {
           throw new Error('Branch ID no disponible')
         }
         
-        // Llamar al endpoint GET /students/search sin parámetros para obtener todos
-        const data = await getData('/students/search', { branch_id: branchId })
-        logger.info('Cargando estudiantes para branch:', branchId)
+        // Llamar al endpoint GET /students/search
+        logger.info('Llamando a searchStudents con branchId:', branchId)
+        const data = await searchStudents(branchId)
+        logger.info('Respuesta del servidor:', data)
         
-        // Normalizar respuesta
-        let estudiantesArray = []
-        if (Array.isArray(data)) {
-          estudiantesArray = data
-        } else if (data && Array.isArray(data.data)) {
-          estudiantesArray = data.data
-        } else if (data && Array.isArray(data.students)) {
-          estudiantesArray = data.students
-        }
-        
-        // Normalizar campos de cada estudiante (asegurar que state sea boolean)
-        estudiantesArray = estudiantesArray.map((estudiante, index) => ({
-          id: estudiante.id || estudiante._id || index.toString(),
-          nombre: estudiante.name || estudiante.nombre || '',
-          rfid: estudiante.rfid_id || estudiante.rfid || 'Pendiente',
-          creditos: estudiante.credits || estudiante.creditos || 0,
-          // Normalizar state a boolean (acepta true, 'true', 1 como true)
-          state: estudiante.state === true || estudiante.state === 'true' || estudiante.state === 1 ? true : false,
-          parent_id: estudiante.parent_id || '',
-          school: estudiante.school || estudiante.escuela || '',
-          course: estudiante.course || estudiante.curso || '',
-          tope: estudiante.tope || estudiante.limit || 0,
-          ...estudiante
+        // Normalizar respuesta usando normalizeStudentList
+        const estudiantesArray = normalizeStudentList(data).map(estudiante => ({
+          id: estudiante.id,
+          nombre: estudiante.name,
+          rfid: estudiante.rfid,
+          creditos: estudiante.credits,
+          state: estudiante.state,
+          parent_id: estudiante.parentId,
+          school: estudiante.school,
+          course: estudiante.course,
+          tope: estudiante.limit
         }))
         
+        logger.info('Estudiantes normalizados:', estudiantesArray)
         setEstudiantes(estudiantesArray)
         logger.info('Estudiantes cargados exitosamente:', estudiantesArray.length)
       } catch (error) {
@@ -173,34 +167,29 @@ const EstudiantesBranch = () => {
       setIsSubmitting(true)
       
       // Validar que existan los datos requeridos
-      if (!selectedEstudiante?.nombre) {
-        setRfidError('Falta el nombre del estudiante')
+      if (!selectedEstudiante?.id) {
+        setRfidError('Falta el ID del estudiante')
         setIsSubmitting(false)
         return
       }
       
-      if (!selectedEstudiante?.parent_id) {
-        setRfidError('Este estudiante no tiene un padre asignado')
+      // Validar que se haya ingresado un RFID
+      if (!rfidInput || rfidInput.trim() === '') {
+        setRfidError('Debe ingresar un RFID')
         setIsSubmitting(false)
         return
       }
       
       // Endpoint POST /students/activate
-      // Los parámetros name, parent_id y rfid van como query params
-      const activateParams = {
-        name: selectedEstudiante.nombre,
-        parent_id: selectedEstudiante.parent_id,
-        rfid: rfidInput || selectedEstudiante.rfid // Usar RFID del input o el existente
-      }
+      // Los parámetros student_id y rfid_id van en el body (cambio crítico del backend)
+      logger.info('Activando estudiante con student_id:', selectedEstudiante.id, 'rfid_id:', rfidInput)
       
-      logger.info('Activando estudiante con params:', activateParams)
-      
-      // Usar axios directamente para enviar params en query string
-      const response = await api.post('/students/activate', {}, { params: activateParams })
+      // Usar la función activateStudent del API
+      const response = await activateStudent(selectedEstudiante.id, rfidInput)
       
       logger.event('STUDENT_ACTIVATED', { 
-        name: selectedEstudiante.nombre,
-        parent_id: selectedEstudiante.parent_id 
+        student_id: selectedEstudiante.id,
+        rfid_id: rfidInput
       })
       
       // Esperar un momento para que el backend actualice
@@ -209,35 +198,21 @@ const EstudiantesBranch = () => {
       // Recargar lista de estudiantes
       const branchId = JSON.parse(localStorage.getItem('user') || '{}')?.id
       if (branchId) {
-        const data = await getData('/students/search', { branch_id: branchId })
+        const data = await searchStudents(branchId)
         logger.info('Datos recargados después de activación:', data)
         
-        let estudiantesArray = []
-        if (Array.isArray(data)) {
-          estudiantesArray = data
-        } else if (data && Array.isArray(data.data)) {
-          estudiantesArray = data.data
-        } else if (data && Array.isArray(data.students)) {
-          estudiantesArray = data.students
-        }
-        
-        // Asegurarse de que el estudiante activado tenga state: true
-        estudiantesArray = estudiantesArray.map((estudiante, index) => {
-          const mapped = {
-            id: estudiante.id || estudiante._id || index.toString(),
-            nombre: estudiante.name || estudiante.nombre || '',
-            rfid: estudiante.rfid_id || estudiante.rfid || 'Pendiente',
-            creditos: estudiante.credits || estudiante.creditos || 0,
-            state: estudiante.state === true || estudiante.state === 'true' || estudiante.state === 1,
-            parent_id: estudiante.parent_id || '',
-            school: estudiante.school || estudiante.escuela || '',
-            course: estudiante.course || estudiante.curso || '',
-            tope: estudiante.tope || estudiante.limit || 0,
-            ...estudiante
-          }
-          logger.debug('Estudiante mapeado:', mapped.nombre, 'state:', mapped.state)
-          return mapped
-        })
+        // Normalizar usando normalizeStudentList
+        const estudiantesArray = normalizeStudentList(data).map(estudiante => ({
+          id: estudiante.id,
+          nombre: estudiante.name,
+          rfid: estudiante.rfid,
+          creditos: estudiante.credits,
+          state: estudiante.state,
+          parent_id: estudiante.parentId,
+          school: estudiante.school,
+          course: estudiante.course,
+          tope: estudiante.limit
+        }))
         
         setEstudiantes(estudiantesArray)
         logger.info('Total estudiantes actualizados:', estudiantesArray.length)
@@ -317,8 +292,8 @@ const EstudiantesBranch = () => {
       const rfid = String(selectedEstudiante.rfid)
       logger.info('Recargando cuenta del estudiante:', selectedEstudiante.nombre, 'RFID:', rfid, 'Monto:', amount)
       
-      // El backend espera "credits" no "amount"
-      await patchData(`/students/${rfid}/add_credits`, { credits: amount })
+      // Usar la función addCredits del API
+      await addCredits(rfid, amount)
       
       logger.event('STUDENT_RECHARGED', { rfid, amount })
       
@@ -334,30 +309,20 @@ const EstudiantesBranch = () => {
       // Recargar lista de estudiantes
       const branchId = JSON.parse(localStorage.getItem('user') || '{}')?.id
       if (branchId) {
-        const data = await getData('/students/search', { branch_id: branchId })
+        const data = await searchStudents(branchId)
         logger.info('Datos recargados después de recarga:', data)
         
-        let estudiantesArray = []
-        if (Array.isArray(data)) {
-          estudiantesArray = data
-        } else if (data && Array.isArray(data.data)) {
-          estudiantesArray = data.data
-        } else if (data && Array.isArray(data.students)) {
-          estudiantesArray = data.students
-        }
-        
-        // Normalizar campos de cada estudiante igual que en el useEffect inicial
-        const estudiantesFormateados = estudiantesArray.map((estudiante, index) => ({
-          id: estudiante.id || estudiante._id || index.toString(),
-          nombre: estudiante.name || estudiante.nombre || '',
-          rfid: estudiante.rfid_id || estudiante.rfid || 'Pendiente',
-          creditos: estudiante.credits || estudiante.creditos || 0,
-          state: estudiante.state === true || estudiante.state === 'true' || estudiante.state === 1,
-          parent_id: estudiante.parent_id || '',
-          school: estudiante.school || estudiante.escuela || '',
-          course: estudiante.course || estudiante.curso || '',
-          tope: estudiante.tope || estudiante.limit || 0,
-          ...estudiante
+        // Normalizar usando normalizeStudentList
+        const estudiantesFormateados = normalizeStudentList(data).map(estudiante => ({
+          id: estudiante.id,
+          nombre: estudiante.name,
+          rfid: estudiante.rfid,
+          creditos: estudiante.credits,
+          state: estudiante.state,
+          parent_id: estudiante.parentId,
+          school: estudiante.school,
+          course: estudiante.course,
+          tope: estudiante.limit
         }))
         
         setEstudiantes(estudiantesFormateados)
@@ -377,6 +342,47 @@ const EstudiantesBranch = () => {
     }
   }
 
+  // Funciones para eliminar estudiante
+  const handleDeleteClick = (estudiante) => {
+    setSelectedEstudiante(estudiante)
+    setIsDeleteModalOpen(true)
+  }
+
+  const handleCloseDeleteModal = () => {
+    if (isSubmitting) return
+    setIsDeleteModalOpen(false)
+    setSelectedEstudiante(null)
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!selectedEstudiante?.id) return
+
+    try {
+      setIsSubmitting(true)
+      logger.info('Eliminando estudiante:', selectedEstudiante.id)
+
+      await deleteStudent(selectedEstudiante.id)
+
+      // Actualizar la lista eliminando el estudiante
+      setEstudiantes(prev => prev.filter(e => e.id !== selectedEstudiante.id))
+
+      setToast({
+        message: 'Estudiante eliminado exitosamente',
+        type: 'success'
+      })
+
+      handleCloseDeleteModal()
+    } catch (error) {
+      logger.error('Error al eliminar estudiante:', error)
+      setToast({
+        message: 'Error al eliminar el estudiante',
+        type: 'error'
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const handleGoBack = () => {
     navigate('/branch')
   }
@@ -387,12 +393,19 @@ const EstudiantesBranch = () => {
 
   // Filtrar estudiantes en tiempo real
   const filteredEstudiantes = estudiantes.filter((estudiante) => {
-    // Si está activo el filtro de pendientes, excluir los que tienen RFID distinto a 'Pendiente'
-    if (showOnlyPending && estudiante.rfid !== 'Pendiente') return false
+    // Si está activo el filtro de pendientes, solo mostrar los que NO tienen RFID asignado
+    if (showOnlyPending) {
+      const sinRfid = !estudiante.rfid || 
+                      estudiante.rfid === 'Pendiente' || 
+                      estudiante.rfid === 'No asignado' || 
+                      estudiante.rfid === '' || 
+                      estudiante.rfid === 'N/A'
+      if (!sinRfid) return false
+    }
 
     const searchLower = searchTerm.toLowerCase()
     const nombreMatch = estudiante.nombre.toLowerCase().includes(searchLower)
-    const rfidMatch = estudiante.rfid.toLowerCase().includes(searchLower)
+    const rfidMatch = (estudiante.rfid || '').toLowerCase().includes(searchLower)
     const escuelaMatch = (estudiante.school || '').toLowerCase().includes(searchLower)
     const cursoMatch = (estudiante.course || '').toLowerCase().includes(searchLower)
     return nombreMatch || rfidMatch || escuelaMatch || cursoMatch
@@ -581,12 +594,12 @@ const EstudiantesBranch = () => {
 
                     {/* Botones de acción */}
                     <div className="flex flex-col sm:flex-row items-center gap-2 flex-shrink-0">
-                      {/* Botón Activar cuenta - sólo mostrar si la cuenta NO está activa (state === false) */}
-                      {!estudiante.state && (
+                      {/* Botón Activar RFID - solo mostrar si el RFID no está asignado (sin RFID real) */}
+                      {(!estudiante.rfid || estudiante.rfid === 'Pendiente' || estudiante.rfid === 'No asignado' || estudiante.rfid === '' || estudiante.rfid === 'N/A') && (
                         <button
                           onClick={() => handleActivateAccount(estudiante)}
                           className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-lg bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] flex items-center justify-center transition-all duration-200 hover:rotate-12 hover:scale-110"
-                          aria-label="Activar cuenta"
+                          aria-label="Activar RFID"
                         >
                           <svg 
                             className="w-[18px] h-[18px] sm:w-5 sm:h-5 md:w-[22px] md:h-[22px] text-black" 
@@ -621,6 +634,27 @@ const EstudiantesBranch = () => {
                             strokeLinecap="round" 
                             strokeLinejoin="round"
                             d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" 
+                          />
+                        </svg>
+                      </button>
+
+                      {/* Botón Eliminar */}
+                      <button
+                        onClick={() => handleDeleteClick(estudiante)}
+                        className="w-9 h-9 sm:w-10 sm:h-10 md:w-11 md:h-11 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 flex items-center justify-center transition-all duration-200 hover:scale-110 hover:-translate-y-0.5"
+                        aria-label="Eliminar estudiante"
+                      >
+                        <svg 
+                          className="w-[18px] h-[18px] sm:w-5 sm:h-5 md:w-[22px] md:h-[22px] text-white" 
+                          fill="none" 
+                          stroke="currentColor" 
+                          viewBox="0 0 24 24"
+                          strokeWidth={2}
+                        >
+                          <path 
+                            strokeLinecap="round" 
+                            strokeLinejoin="round"
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" 
                           />
                         </svg>
                       </button>
@@ -849,6 +883,110 @@ const EstudiantesBranch = () => {
               Recargar
             </button>
           </form>
+        </div>
+      </Modal>
+
+      {/* Modal Eliminar Estudiante */}
+      <Modal 
+        isOpen={isDeleteModalOpen} 
+        onClose={handleCloseDeleteModal}
+        title="Eliminar estudiante"
+        showCloseButton={true}
+        showIcon={false}
+        blockInteractions={isSubmitting}
+      >
+        <div className="space-y-4 sm:space-y-5">
+          {/* Advertencia */}
+          <div className="flex items-start gap-3 p-3 sm:p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+            <svg 
+              className="w-6 h-6 text-red-600 dark:text-red-500 flex-shrink-0 mt-0.5" 
+              fill="none" 
+              stroke="currentColor" 
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+            >
+              <path 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" 
+              />
+            </svg>
+            <div>
+              <p className="text-red-800 dark:text-red-300 text-sm sm:text-base font-semibold">
+                ¿Estás seguro de eliminar este estudiante?
+              </p>
+              <p className="text-red-700 dark:text-red-400 text-xs sm:text-sm mt-1">
+                Esta acción no se puede deshacer.
+              </p>
+            </div>
+          </div>
+
+          {/* Información del estudiante */}
+          <div className="space-y-2 p-3 sm:p-4 bg-gray-50 dark:bg-[#1a1a1a] rounded-lg">
+            <div className="flex items-center gap-2">
+              <svg 
+                className="w-5 h-5 text-light-text-secondary dark:text-gray-400 flex-shrink-0" 
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+              >
+                <path 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                  d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" 
+                />
+              </svg>
+              <p className="text-light-text dark:text-dark-text text-sm sm:text-base font-medium">
+                {selectedEstudiante?.nombre || ''}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <svg 
+                className="w-5 h-5 text-light-text-secondary dark:text-gray-400 flex-shrink-0" 
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+              >
+                <path 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                  d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" 
+                />
+              </svg>
+              <p className="text-light-text-secondary dark:text-gray-400 text-xs sm:text-sm">
+                RFID: <span className="font-mono">{selectedEstudiante?.rfid || 'N/A'}</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Botones */}
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleCloseDeleteModal}
+              disabled={isSubmitting}
+              className="flex-1 bg-gray-200 dark:bg-[#3a3a3c] hover:bg-gray-300 dark:hover:bg-[#4a4a4c] text-light-text dark:text-dark-text font-semibold py-3 sm:py-3.5 rounded-lg transition-all duration-200 text-sm sm:text-base disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmDelete}
+              disabled={isSubmitting}
+              className="flex-1 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-semibold py-3 sm:py-3.5 rounded-lg transition-all duration-200 text-sm sm:text-base disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  <span>Eliminando...</span>
+                </>
+              ) : (
+                'Eliminar'
+              )}
+            </button>
+          </div>
         </div>
       </Modal>
 

@@ -270,4 +270,340 @@ export const deleteData = async (endpoint) => {
   }
 }
 
+// ============================================================
+// FUNCIONES ESPECÍFICAS PARA NUEVOS ENDPOINTS (OpenAPI)
+// ============================================================
+
+/**
+ * Obtener estudiantes de un padre
+ * @param {number} parentId - ID del padre
+ * @returns {Promise} - Array de estudiantes
+ */
+export const getParentStudents = async (parentId) => {
+  try {
+    const response = await api.get(`/parent/${parentId}/students`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener padres de una sucursal
+ * @param {number} branchId - ID de la sucursal
+ * @returns {Promise} - Array de padres
+ */
+export const getBranchParents = async (branchId) => {
+  try {
+    const response = await api.get(`/branch/${branchId}/parents`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener todos los miembros (padres y staff) de una sucursal
+ * @param {number} branchId - ID de la sucursal
+ * @returns {Promise} - Array de miembros (padres y staff)
+ */
+export const getBranchMembers = async (branchId) => {
+  try {
+    const response = await api.get(`/branch/${branchId}/members`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener sucursales de un cliente
+ * @param {number} clientId - ID del cliente
+ * @returns {Promise} - Array de sucursales
+ */
+export const getClientBranches = async (clientId) => {
+  try {
+    const response = await api.get(`/client/${clientId}/branches`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Buscar estudiantes en una sucursal
+ * @param {number} branchId - ID de la sucursal
+ * @param {string} name - Nombre del estudiante (opcional)
+ * @returns {Promise} - Array de estudiantes
+ */
+export const searchStudents = async (branchId, name = null) => {
+  try {
+    const params = { branch_id: branchId }
+    if (name) params.name = name
+    
+    const response = await api.get('/students/search', { params })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Activar estudiante asignando RFID
+ * @param {number} studentId - ID del estudiante
+ * @param {string} rfidId - RFID a asignar
+ * @returns {Promise} - Respuesta del servidor
+ */
+export const activateStudent = async (studentId, rfidId) => {
+  try {
+    const response = await api.post('/students/activate', {
+      student_id: studentId,
+      rfid_id: rfidId
+    })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Agregar créditos a un estudiante
+ * @param {string} rfid - RFID del estudiante
+ * @param {number} credits - Cantidad de créditos a agregar
+ * @returns {Promise} - Respuesta del servidor
+ */
+export const addCredits = async (rfid, credits) => {
+  try {
+    const response = await api.patch(`/students/${rfid}/add_credits`, { credits })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Cobrar/descontar créditos de un estudiante
+ * @param {string} rfid - RFID del estudiante
+ * @param {number} credits - Cantidad de créditos a descontar
+ * @returns {Promise} - Respuesta del servidor
+ */
+export const chargeCredits = async (rfid, credits) => {
+  try {
+    const response = await api.patch(`/students/${rfid}/charge`, { credits })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Crear una transacción (compra)
+ * @param {string} rfid - RFID del estudiante
+ * @param {string} product - Nombre del producto
+ * @param {number} price - Precio
+ * @returns {Promise} - Respuesta con la transacción creada
+ */
+export const createTransaction = async (rfid, product, price) => {
+  try {
+    const response = await api.post('/transactions/', {
+      rfid,
+      product,
+      price
+    })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener historial de transacciones de un estudiante
+ * @param {string} rfid - RFID del estudiante
+ * @param {number} limit - Límite de transacciones (default: 50)
+ * @returns {Promise} - Array de transacciones
+ */
+export const getTransactionHistory = async (rfid, limit = 50) => {
+  try {
+    const response = await api.get(`/transactions/${rfid}/history`, {
+      params: { limit }
+    })
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener perfil rápido de un estudiante (nombre y créditos)
+ * @param {string} rfid - RFID del estudiante
+ * @returns {Promise} - Objeto con name y credits
+ */
+export const getStudentProfile = async (rfid) => {
+  try {
+    const response = await api.get(`/transactions/${rfid}/profile`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener conteo de estudiantes de un cliente
+ * @param {number} clientId - ID del cliente
+ * @returns {Promise} - Objeto con current_count, max_students, available
+ */
+export const getClientStudentCount = async (clientId) => {
+  try {
+    const response = await api.get(`/client/${clientId}/student-count`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Eliminar un estudiante por ID numérico
+ * @param {number} studentId - ID del estudiante a eliminar
+ * @returns {Promise} - Respuesta del servidor
+ */
+export const deleteStudent = async (studentId) => {
+  try {
+    const response = await api.delete(`/students/${studentId}`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener estudiante por ID numérico
+ * @param {number} studentId - ID del estudiante
+ * @returns {Promise} - Datos del estudiante
+ */
+export const getStudentById = async (studentId) => {
+  try {
+    const response = await api.get(`/students/id/${studentId}`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Actualizar estudiante por ID numérico
+ * @param {number} studentId - ID del estudiante
+ * @param {Object} data - Datos a actualizar
+ * @returns {Promise} - Estudiante actualizado
+ */
+export const updateStudentById = async (studentId, data) => {
+  try {
+    const response = await api.patch(`/students/${studentId}`, data)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+// ============================================================
+// FUNCIONES ESPECÍFICAS PARA STAFF
+// ============================================================
+
+/**
+ * Obtener todos los miembros del staff
+ * @returns {Promise} - Array de staff
+ */
+export const getAllStaff = async () => {
+  try {
+    const response = await api.get('/staff/')
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Crear un nuevo miembro del staff
+ * @param {Object} staffData - Datos del staff (name, email, password, branch_id)
+ * @returns {Promise} - Staff creado
+ */
+export const createStaff = async (staffData) => {
+  try {
+    const response = await api.post('/staff/', staffData)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener estudiantes asociados a un staff
+ * @param {number} staffId - ID del staff
+ * @returns {Promise} - Array de estudiantes
+ */
+export const getStaffStudents = async (staffId) => {
+  try {
+    const response = await api.get(`/staff/${staffId}/students`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener un miembro del staff por ID
+ * @param {number} staffId - ID del staff
+ * @returns {Promise} - Datos del staff
+ */
+export const getStaffById = async (staffId) => {
+  try {
+    const response = await api.get(`/staff/${staffId}`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Actualizar información de un staff
+ * @param {number} staffId - ID del staff
+ * @param {Object} data - Datos a actualizar
+ * @returns {Promise} - Staff actualizado
+ */
+export const updateStaff = async (staffId, data) => {
+  try {
+    const response = await api.patch(`/staff/${staffId}`, data)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Eliminar un miembro del staff
+ * @param {number} staffId - ID del staff
+ * @returns {Promise} - Respuesta del servidor
+ */
+export const deleteStaff = async (staffId) => {
+  try {
+    const response = await api.delete(`/staff/${staffId}`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * Obtener todas las transacciones del sistema
+ * @param {number} limit - Límite de transacciones a obtener (default: 100)
+ * @returns {Promise} - Lista de transacciones
+ */
+export const getAllTransactions = async (limit = 100) => {
+  try {
+    const response = await api.get(`/transactions/?limit=${limit}`)
+    return response.data
+  } catch (error) {
+    throw error
+  }
+}
+
 export default api

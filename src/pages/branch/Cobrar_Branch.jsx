@@ -6,7 +6,7 @@ import LogoutModal from '../../components/LogoutModal'
 import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { postData, patchData } from '../../services/api'
+import { postData, patchData, createTransaction } from '../../services/api'
 import { validateForm, isRequired } from '../../utils/validation'
 import { RFID_SCAN_DELAY } from '../../constants'
 import logger from '../../utils/logger'
@@ -212,18 +212,10 @@ const CobrarBranch = () => {
       logger.info('Producto:', productName)
       logger.info('Precio:', priceValue)
       
-      // Registrar la transacción en el historial
-      // Este endpoint se encarga de descontar los créditos Y registrar la transacción
-      const now = new Date()
-      const transactionPayload = {
-        product: productName,
-        price: priceValue,
-        fecha: now.toLocaleDateString('es-ES'),
-        timestamp: now.toISOString()
-      }
-      logger.info('Payload para /transactions/{rfid}:', JSON.stringify(transactionPayload))
-      
-      const response = await postData(`/transactions/${rfid}`, transactionPayload)
+      // Usar la función createTransaction del API
+      // El endpoint cambió de POST /transactions/{rfid} a POST /transactions/
+      // El RFID ahora va en el body, y el campo cambió de product_name a product
+      const response = await createTransaction(rfid, productName, priceValue)
       logger.info('Respuesta del cobro:', response)
       
       logger.event('CHARGE_COMPLETED', { 
@@ -241,15 +233,39 @@ const CobrarBranch = () => {
       setProductName('')
       setPrice('')
       setErrors({})
+      
+      // Asegurar que el modo escaneo esté desactivado
+      if (isScanning) setIsScanning(false)
     } catch (error) {
       logger.error('=== ERROR EN COBRO ===')
       logger.error('Error completo:', error)
       logger.error('Response data:', error.response?.data)
       logger.error('Response status:', error.response?.status)
       
-      const errorMessage = error.response?.data?.message || error.response?.data?.detail || 'Error al realizar el cobro'
+      // Asegurar que el modo escaneo esté desactivado en caso de error
+      if (isScanning) setIsScanning(false)
+      
+      // Extraer el mensaje de error del servidor
+      let errorMessage = 'Error al realizar el cobro'
+      
+      if (error.response?.data) {
+        const data = error.response.data
+        
+        // Si detail es un objeto con message
+        if (data.detail && typeof data.detail === 'object' && data.detail.message) {
+          errorMessage = data.detail.message
+        }
+        // Si detail es un string directamente
+        else if (data.detail && typeof data.detail === 'string') {
+          errorMessage = data.detail
+        }
+        // Si message está en el nivel superior
+        else if (data.message) {
+          errorMessage = data.message
+        }
+      }
+      
       showToast(errorMessage, 'error')
-      setErrors({ submit: errorMessage })
     } finally {
       setIsSubmitting(false)
     }
@@ -364,6 +380,12 @@ const CobrarBranch = () => {
                 <form onSubmit={handleChargeSubmit} className="space-y-4 sm:space-y-5">
                 {/* Campo RFID con floating label */}
                 <div className="relative">
+                  {/* Icono RFID */}
+                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                    </svg>
+                  </div>
                   <input
                     type="text"
                     id="rfid-input"
@@ -371,7 +393,7 @@ const CobrarBranch = () => {
                     ref={rfidInputRef}
                     value={rfidInput}
                     onChange={handleRfidInputChange}
-                    className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                    className={`peer w-full pl-12 pr-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
                       errors.rfid 
                         ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
                         : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
@@ -379,7 +401,7 @@ const CobrarBranch = () => {
                   />
                   <label 
                     htmlFor="rfid-input" 
-                    className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                    className={`absolute left-12 text-gray-400 transition-all duration-200 pointer-events-none ${
                       rfidInput 
                         ? 'top-2 text-xs' 
                         : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
@@ -394,13 +416,19 @@ const CobrarBranch = () => {
 
                 {/* Campo Nombre del producto con floating label */}
                 <div className="relative">
+                  {/* Icono Producto */}
+                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
+                  </div>
                   <input
                     type="text"
                     id="product-name-input"
                     name="productName"
                     value={productName}
                     onChange={handleProductNameChange}
-                    className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                    className={`peer w-full pl-12 pr-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
                       errors.productName 
                         ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
                         : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
@@ -408,7 +436,7 @@ const CobrarBranch = () => {
                   />
                   <label 
                     htmlFor="product-name-input" 
-                    className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                    className={`absolute left-12 text-gray-400 transition-all duration-200 pointer-events-none ${
                       productName 
                         ? 'top-2 text-xs' 
                         : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
@@ -423,13 +451,19 @@ const CobrarBranch = () => {
 
                 {/* Campo Precio con floating label */}
                 <div className="relative">
+                  {/* Icono Precio */}
+                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
                   <input
                     type="text"
                     id="price-input"
                     name="price"
                     value={price}
                     onChange={handlePriceChange}
-                    className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                    className={`peer w-full pl-12 pr-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
                       errors.price 
                         ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
                         : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
@@ -437,7 +471,7 @@ const CobrarBranch = () => {
                   />
                   <label 
                     htmlFor="price-input" 
-                    className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                    className={`absolute left-12 text-gray-400 transition-all duration-200 pointer-events-none ${
                       price 
                         ? 'top-2 text-xs' 
                         : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
