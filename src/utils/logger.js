@@ -84,6 +84,7 @@ export const logApiResponse = (endpoint, response) => {
 export default {
   info: logInfo,
   warning: logWarning,
+  warn: logWarning, // Alias para compatibilidad
   error: logError,
   debug: logDebug,
   event: logEvent,

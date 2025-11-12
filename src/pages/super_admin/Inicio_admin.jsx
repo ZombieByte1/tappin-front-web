@@ -1,48 +1,249 @@
 import { useState, useEffect, useRef } from 'react'
 import logoTappin from '../../assets/logoTappin.png'
+import Modal from '../../components/Modal'
 import LogoutModal from '../../components/LogoutModal'
+import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { getData } from '../../services/api'
+import { useAuth } from '../../context/AuthContext'
+import { getData, getAllTransactions, postData } from '../../services/api'
+import { validateForm, isRequired, isValidEmail } from '../../utils/validation'
 import logger from '../../utils/logger'
 
 const SuperAdminDashboard = () => {
   const { saveScroll, getScroll } = useScroll()
   const { isLogoutModalOpen, openLogoutModal, closeLogoutModal, confirmLogout } = useLogout()
+  const { user } = useAuth()
   const [isScrolled, setIsScrolled] = useState(false)
+  const [isModalOpen, setIsModalOpen] = useState(false)
   const containerRef = useRef(null)
   const scrollKey = '/super-admin'
 
   // Estados para datos del backend
   const [stats, setStats] = useState({
-    clientesTotales: 0,
-    sucursalesTotales: 0,
-    padresRegistrados: 0,
-    estudiantesActivos: 0
+    clients: 0,
+    branches: 0,
+    parents: 0,
+    staff: 0,
+    students: 0
   })
-  const [clientes, setClientes] = useState([])
+  const [transactions, setTransactions] = useState([])
   const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [toast, setToast] = useState(null)
+  
+  // Estados para el formulario de cliente
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    password: '',
+    tier: 'custom',
+    max_students: ''
+  })
+  const [errors, setErrors] = useState({})
+
+  // Función para mostrar notificación
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type })
+  }
+
+  // Función para cerrar notificación
+  const closeToast = () => {
+    setToast(null)
+  }
+
+  // Funciones para manejar el modal
+  const handleAddClient = () => {
+    setIsModalOpen(true)
+  }
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false)
+    setFormData({
+      name: '',
+      email: '',
+      password: '',
+      tier: 'custom',
+      max_students: ''
+    })
+    setErrors({})
+  }
+
+  // Manejo de cambios en el formulario
+  const handleInputChange = (e) => {
+    const { name, value } = e.target
+    
+    // Si cambia el tier, actualizar max_students automáticamente
+    if (name === 'tier') {
+      let maxStudents = ''
+      switch(value) {
+        case 'Basico':
+          maxStudents = '100'
+          break
+        case 'oro':
+          maxStudents = '500'
+          break
+        case 'platino':
+          maxStudents = '1000'
+          break
+        case 'custom':
+          maxStudents = ''
+          break
+        default:
+          maxStudents = ''
+      }
+      
+      setFormData(prev => ({
+        ...prev,
+        tier: value,
+        max_students: maxStudents
+      }))
+    } else {
+      setFormData(prev => ({
+        ...prev,
+        [name]: value
+      }))
+    }
+    
+    // Limpiar error del campo
+    if (errors[name]) {
+      setErrors(prev => {
+        const newErrors = { ...prev }
+        delete newErrors[name]
+        return newErrors
+      })
+    }
+  }
+
+  // Validación del formulario
+  const validateFormData = () => {
+    const rules = {
+      name: [
+        { validator: isRequired, message: 'El nombre es requerido' }
+      ],
+      email: [
+        { validator: isRequired, message: 'El email es requerido' },
+        { validator: isValidEmail, message: 'El email no es válido' }
+      ],
+      password: [
+        { validator: isRequired, message: 'La contraseña es requerida' },
+        { 
+          validator: (value) => value.length >= 6, 
+          message: 'La contraseña debe tener al menos 6 caracteres' 
+        }
+      ]
+    }
+    
+    // Solo validar max_students si el tier es custom
+    if (formData.tier === 'custom') {
+      rules.max_students = [
+        { validator: isRequired, message: 'El máximo de estudiantes es requerido' },
+        { 
+          validator: (value) => !isNaN(value) && parseInt(value) >= 0, 
+          message: 'Debe ser un número válido mayor o igual a 0' 
+        }
+      ]
+    }
+
+    const validationErrors = validateForm(formData, rules)
+    setErrors(validationErrors)
+    return Object.keys(validationErrors).length === 0
+  }
+
+  // Manejo del envío del formulario
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    
+    if (!validateFormData()) {
+      return
+    }
+
+    try {
+      setIsSubmitting(true)
+      
+      // Obtener super_admin_id del usuario en sesión
+      const superAdminId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
+      
+      if (!superAdminId) {
+        throw new Error('ID de Super Admin no disponible')
+      }
+      
+      // Determinar max_students según el tier
+      let maxStudents = parseInt(formData.max_students)
+      if (formData.tier === 'Basico') {
+        maxStudents = 100
+      } else if (formData.tier === 'oro') {
+        maxStudents = 500
+      } else if (formData.tier === 'platino') {
+        maxStudents = 1000
+      }
+      
+      // Preparar datos para el endpoint
+      const clientData = {
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        super_admin_id: superAdminId,
+        tier: formData.tier,
+        max_students: maxStudents
+      }
+      
+      logger.info('Datos a enviar:', clientData)
+      
+      // Crear cliente
+      const response = await postData('/client/', clientData)
+      logger.info('Cliente creado exitosamente:', response)
+      
+      logger.event('CLIENT_ADDED', { name: formData.name, email: formData.email })
+      
+      // Recargar estadísticas
+      const dashboardData = await getData('/dashboard/')
+      setStats({
+        clients: dashboardData.clients || 0,
+        branches: dashboardData.branches || 0,
+        parents: dashboardData.parents || 0,
+        staff: dashboardData.staff || 0,
+        students: dashboardData.students || 0
+      })
+      
+      handleCloseModal()
+      showToast('Cliente agregado exitosamente', 'success')
+    } catch (error) {
+      logger.error('Error al agregar cliente:', error)
+      const errorMessage = error.response?.data?.detail || error.response?.data?.message || 'Error al agregar el cliente'
+      showToast(errorMessage, 'error')
+      setErrors({ submit: errorMessage })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   // Cargar datos del backend
   useEffect(() => {
     const fetchData = async () => {
       try {
         setIsLoading(true)
-        setError(null)
 
-        // Obtener estadísticas
-        const statsData = await getData('/admin/stats')
-        setStats(statsData)
+        // Obtener estadísticas del dashboard
+        const dashboardData = await getData('/dashboard/')
+        logger.info('Datos del dashboard cargados:', dashboardData)
+        
+        setStats({
+          clients: dashboardData.clients || 0,
+          branches: dashboardData.branches || 0,
+          parents: dashboardData.parents || 0,
+          staff: dashboardData.staff || 0,
+          students: dashboardData.students || 0
+        })
 
-        // Obtener clientes
-        const clientesData = await getData('/admin/clients')
-        setClientes(clientesData)
+        // Obtener transacciones (limitar a 50 más recientes)
+        const transactionsData = await getAllTransactions(50)
+        logger.info('Transacciones cargadas:', transactionsData)
+        setTransactions(transactionsData.data || [])
 
         logger.info('Datos de Super Admin cargados exitosamente')
       } catch (err) {
         logger.error('Error al cargar datos de Super Admin:', err)
-        setError('Error al cargar los datos. Por favor, intenta nuevamente.')
       } finally {
         setIsLoading(false)
       }
@@ -73,11 +274,6 @@ const SuperAdminDashboard = () => {
     container.addEventListener('scroll', handleScroll)
     return () => container.removeEventListener('scroll', handleScroll)
   }, [])
-
-  const handleDetalles = (clienteId) => {
-    logger.info('Ver detalles del cliente:', clienteId)
-    // TODO: Navegar a página de detalles del cliente
-  }
 
   return (
     <div ref={containerRef} className="page-container min-h-screen bg-light-bg dark:bg-dark-bg">
@@ -137,15 +333,8 @@ const SuperAdminDashboard = () => {
           </div>
         )}
 
-        {/* Error State */}
-        {error && !isLoading && (
-          <div className="bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-400 px-4 py-3 rounded-lg text-sm mb-6">
-            {error}
-          </div>
-        )}
-
         {/* Content */}
-        {!isLoading && !error && (
+        {!isLoading && (
           <>
         {/* Stats Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 md:gap-5 lg:gap-6 mb-6 sm:mb-8 md:mb-10">
@@ -169,7 +358,7 @@ const SuperAdminDashboard = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs md:text-sm mb-0.5 sm:mb-1">Clientes totales</p>
-                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.clientesTotales}</p>
+                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.clients}</p>
               </div>
             </div>
           </div>
@@ -194,14 +383,14 @@ const SuperAdminDashboard = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs md:text-sm mb-0.5 sm:mb-1">Sucursales Totales</p>
-                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.sucursalesTotales}</p>
+                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.branches}</p>
               </div>
             </div>
           </div>
 
-          {/* Padres registrados */}
+          {/* Padres y Staff registrados */}
           <div className="bg-white dark:bg-[#2a2b2e] rounded-xl sm:rounded-2xl p-4 sm:p-5 md:p-6 border border-gray-200 dark:border-[#3a3a3c] shadow-sm hover:shadow-md transition-all duration-200">
-            <div className="flex items-center gap-3 sm:gap-4">
+            <div className="flex items-center gap-3 sm:gap-4 mb-4">
               <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
                 <svg 
                   className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7 text-primary" 
@@ -218,8 +407,22 @@ const SuperAdminDashboard = () => {
                 </svg>
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs md:text-sm mb-0.5 sm:mb-1">Padres registrados</p>
-                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.padresRegistrados.toLocaleString()}</p>
+                <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs md:text-sm mb-0.5 sm:mb-1">Usuarios registrados</p>
+              </div>
+            </div>
+            
+            {/* Subdivisión de Padres y Staff */}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+              {/* Padres */}
+              <div className="border-l-2 border-orange-500 pl-3">
+                <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Padres</p>
+                <p className="text-light-text dark:text-dark-text text-lg sm:text-xl md:text-2xl font-bold">{stats.parents.toLocaleString()}</p>
+              </div>
+              
+              {/* Staff */}
+              <div className="border-l-2 border-blue-500 pl-3">
+                <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Staff</p>
+                <p className="text-light-text dark:text-dark-text text-lg sm:text-xl md:text-2xl font-bold">{stats.staff.toLocaleString()}</p>
               </div>
             </div>
           </div>
@@ -244,16 +447,17 @@ const SuperAdminDashboard = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs md:text-sm mb-0.5 sm:mb-1">Estudiantes activos</p>
-                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.estudiantesActivos.toLocaleString()}</p>
+                <p className="text-light-text dark:text-dark-text text-xl sm:text-2xl md:text-3xl font-bold">{stats.students.toLocaleString()}</p>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Tabla de Clientes */}
+        {/* Tabla de Transacciones */}
         <div className="bg-white dark:bg-[#2a2b2e] rounded-xl sm:rounded-2xl border border-gray-200 dark:border-[#3a3a3c] overflow-hidden shadow-sm">
           <div className="p-4 sm:p-5 md:p-6 border-b border-gray-200 dark:border-[#3a3a3c]">
-            <h3 className="text-light-text dark:text-dark-text text-lg sm:text-xl md:text-2xl font-bold">Clientes</h3>
+            <h3 className="text-light-text dark:text-dark-text text-lg sm:text-xl md:text-2xl font-bold">Transacciones Recientes</h3>
+            <p className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm mt-1">Últimas 50 transacciones del sistema</p>
           </div>
 
           {/* Tabla para desktop */}
@@ -261,89 +465,328 @@ const SuperAdminDashboard = () => {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-[#3a3a3c]">
-                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Restaurante</th>
-                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Administrador</th>
-                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Tipo de Cuenta</th>
-                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Estado</th>
-                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Acciones</th>
+                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">ID</th>
+                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">RFID</th>
+                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Producto</th>
+                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Monto</th>
+                  <th className="text-left text-gray-500 dark:text-gray-400 text-sm font-semibold p-4">Fecha</th>
                 </tr>
               </thead>
               <tbody>
-                {clientes.map((cliente) => (
-                  <tr key={cliente.id} className="border-b border-gray-200 dark:border-[#3a3a3c] hover:bg-gray-50 dark:hover:bg-[#1b1c1e] transition-colors">
-                    <td className="p-4 text-light-text dark:text-dark-text text-sm">{cliente.restaurante}</td>
-                    <td className="p-4">
-                      <p className="text-light-text dark:text-dark-text text-sm font-medium">{cliente.administrador}</p>
-                      <p className="text-primary text-xs">{cliente.email}</p>
-                    </td>
-                    <td className="p-4 text-light-text dark:text-dark-text text-sm">{cliente.tipoCuenta}</td>
-                    <td className="p-4">
-                      <span className={`inline-block px-2.5 sm:px-3 py-1 rounded-full text-xs font-semibold ${
-                        cliente.estado === 'activo' 
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-700' 
-                          : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-700'
-                      }`}>
-                        {cliente.estado === 'activo' ? 'Activo' : 'Inactivo'}
-                      </span>
-                    </td>
-                    <td className="p-4">
-                      <button
-                        onClick={() => handleDetalles(cliente.id)}
-                        className="bg-primary hover:bg-[#fcc000] active:bg-[#e5a711] text-black font-semibold px-3.5 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-all duration-200 text-sm shadow-sm hover:shadow-md"
-                      >
-                        Detalles
-                      </button>
+                {transactions.length === 0 ? (
+                  <tr>
+                    <td colSpan="5" className="p-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+                      No hay transacciones registradas
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  transactions.map((transaction) => (
+                    <tr key={transaction.id} className="border-b border-gray-200 dark:border-[#3a3a3c] hover:bg-gray-50 dark:hover:bg-[#1b1c1e] transition-colors">
+                      <td className="p-4 text-light-text dark:text-dark-text text-sm font-medium">#{transaction.id}</td>
+                      <td className="p-4 text-light-text dark:text-dark-text text-sm">{transaction.rfid_used || 'N/A'}</td>
+                      <td className="p-4 text-light-text dark:text-dark-text text-sm">{transaction.product || 'N/A'}</td>
+                      <td className="p-4 text-primary font-semibold text-sm">${parseFloat(transaction.price || 0).toFixed(2)}</td>
+                      <td className="p-4 text-gray-500 dark:text-gray-400 text-sm">
+                        {transaction.timestamp ? new Date(transaction.timestamp).toLocaleString('es-ES', {
+                          year: 'numeric',
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        }) : 'N/A'}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
 
           {/* Cards para móvil/tablet */}
           <div className="lg:hidden divide-y divide-gray-200 dark:divide-[#3a3a3c]">
-            {clientes.map((cliente) => (
-              <div key={cliente.id} className="p-4 sm:p-5 hover:bg-gray-50 dark:hover:bg-[#1b1c1e] transition-colors">
-                <div className="space-y-2.5 sm:space-y-3">
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Restaurante</p>
-                    <p className="text-light-text dark:text-dark-text text-sm font-medium">{cliente.restaurante}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Administrador</p>
-                    <p className="text-light-text dark:text-dark-text text-sm font-medium">{cliente.administrador}</p>
-                    <p className="text-primary text-xs">{cliente.email}</p>
-                  </div>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Tipo de Cuenta</p>
-                      <p className="text-light-text dark:text-dark-text text-sm">{cliente.tipoCuenta}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Estado</p>
-                      <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-semibold ${
-                        cliente.estado === 'activo' 
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-700' 
-                          : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-700'
-                      }`}>
-                        {cliente.estado === 'activo' ? 'Activo' : 'Inactivo'}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleDetalles(cliente.id)}
-                    className="w-full bg-primary hover:bg-[#fcc000] active:bg-[#e5a711] text-black font-semibold px-4 py-2 rounded-lg transition-all duration-200 text-sm shadow-sm hover:shadow-md"
-                  >
-                    Detalles
-                  </button>
-                </div>
+            {transactions.length === 0 ? (
+              <div className="p-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+                No hay transacciones registradas
               </div>
-            ))}
+            ) : (
+              transactions.map((transaction) => (
+                <div key={transaction.id} className="p-4 sm:p-5 hover:bg-gray-50 dark:hover:bg-[#1b1c1e] transition-colors">
+                  <div className="space-y-2.5 sm:space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">ID Transacción</p>
+                        <p className="text-light-text dark:text-dark-text text-sm font-medium">#{transaction.id}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Monto</p>
+                        <p className="text-primary font-semibold text-base">${parseFloat(transaction.price || 0).toFixed(2)}</p>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">RFID</p>
+                      <p className="text-light-text dark:text-dark-text text-sm">{transaction.rfid_used || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Producto</p>
+                      <p className="text-light-text dark:text-dark-text text-sm">{transaction.product || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 dark:text-gray-400 text-[10px] sm:text-xs mb-1">Fecha</p>
+                      <p className="text-gray-500 dark:text-gray-400 text-sm">
+                        {transaction.timestamp ? new Date(transaction.timestamp).toLocaleString('es-ES', {
+                          year: 'numeric',
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        }) : 'N/A'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
           </>
         )}
+
+        {/* Botón flotante para agregar cliente */}
+        <button
+          onClick={handleAddClient}
+          className="fixed right-4 bottom-4 sm:right-6 sm:bottom-6 md:right-8 md:bottom-8 w-14 h-14 sm:w-15 sm:h-15 md:w-16 md:h-16 bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] rounded-full flex items-center justify-center transition-[transform,box-shadow,background-color,rotate] duration-300 hover:scale-110 active:scale-105 hover:rotate-90 z-50 shadow-lg hover:shadow-xl"
+          aria-label="Agregar cliente"
+        >
+          <svg 
+            className="w-7 h-7 sm:w-[30px] sm:h-[30px] md:w-8 md:h-8 text-black" 
+            fill="none" 
+            stroke="currentColor" 
+            viewBox="0 0 24 24"
+            strokeWidth={2.5}
+          >
+            <path 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+              d="M12 4v16m8-8H4" 
+            />
+          </svg>
+        </button>
       </main>
+
+      {/* Modal para agregar cliente */}
+      <Modal 
+        isOpen={isModalOpen} 
+        onClose={handleCloseModal}
+        title="Crear Cliente"
+      >
+        <div className="space-y-5 sm:space-y-5 md:space-y-6">
+          <p className="text-light-text-secondary dark:text-gray-400 text-[13px] sm:text-sm leading-relaxed">
+            Rellene los campos para registrar un nuevo cliente
+          </p>
+
+          <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5">
+            {/* Campo Nombre */}
+            <div className="relative">
+              <input
+                type="text"
+                id="name"
+                name="name"
+                value={formData.name}
+                onChange={handleInputChange}
+                className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                  errors.name 
+                    ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                    : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+                }`}
+              />
+              <label 
+                htmlFor="name" 
+                className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                  formData.name 
+                    ? 'top-2 text-xs' 
+                    : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+                }`}
+              >
+                Nombre del Cliente
+              </label>
+              {errors.name && (
+                <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.name}</p>
+              )}
+            </div>
+
+            {/* Campo Email */}
+            <div className="relative">
+              <input
+                type="email"
+                id="email"
+                name="email"
+                value={formData.email}
+                onChange={handleInputChange}
+                className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                  errors.email 
+                    ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                    : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+                }`}
+              />
+              <label 
+                htmlFor="email" 
+                className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                  formData.email 
+                    ? 'top-2 text-xs' 
+                    : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+                }`}
+              >
+                Email
+              </label>
+              {errors.email && (
+                <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.email}</p>
+              )}
+            </div>
+
+            {/* Campo Contraseña */}
+            <div className="relative">
+              <input
+                type="password"
+                id="password"
+                name="password"
+                value={formData.password}
+                onChange={handleInputChange}
+                className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                  errors.password 
+                    ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                    : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+                }`}
+              />
+              <label 
+                htmlFor="password" 
+                className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                  formData.password 
+                    ? 'top-2 text-xs' 
+                    : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+                }`}
+              >
+                Contraseña
+              </label>
+              {errors.password && (
+                <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.password}</p>
+              )}
+            </div>
+
+            {/* Campo Tier */}
+            <div className="relative">
+              <select
+                id="tier"
+                name="tier"
+                value={formData.tier}
+                onChange={handleInputChange}
+                className="peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent appearance-none cursor-pointer"
+              >
+                <option value="Basico">Básico</option>
+                <option value="oro">Oro</option>
+                <option value="platino">Platino</option>
+                <option value="custom">Custom</option>
+              </select>
+              <label 
+                htmlFor="tier" 
+                className="absolute left-4 top-2 text-xs text-gray-400 transition-all duration-200 pointer-events-none"
+              >
+                Plan
+              </label>
+              {/* Icono de flecha para select */}
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
+
+            {/* Campo Máximo de Estudiantes */}
+            <div className="relative">
+              <input
+                type="number"
+                id="max_students"
+                name="max_students"
+                value={formData.max_students}
+                onChange={handleInputChange}
+                min="0"
+                readOnly={formData.tier !== 'custom'}
+                className={`peer w-full px-4 pt-6 pb-2 text-[15px] sm:text-base bg-gray-100 dark:bg-[#1a1a1a] rounded-lg text-light-text dark:text-dark-text focus:outline-none transition-all ${
+                  formData.tier !== 'custom' 
+                    ? 'cursor-not-allowed opacity-60' 
+                    : ''
+                } ${
+                  errors.max_students 
+                    ? 'border-2 border-red-500 focus:ring-2 focus:ring-red-500' 
+                    : 'border border-gray-300 dark:border-[#3a3a3c] focus:ring-2 focus:ring-[#FDB913] focus:border-transparent'
+                }`}
+              />
+              <label 
+                htmlFor="max_students" 
+                className={`absolute left-4 text-gray-400 transition-all duration-200 pointer-events-none ${
+                  formData.max_students 
+                    ? 'top-2 text-xs' 
+                    : 'top-[18px] text-[15px] sm:text-base peer-focus:top-2 peer-focus:text-xs'
+                }`}
+              >
+                Máximo de Estudiantes
+              </label>
+              {formData.tier !== 'custom' && (
+                <p className="text-gray-500 dark:text-gray-400 text-[11px] sm:text-xs mt-1.5 ml-1">
+                  Este valor se establece automáticamente según el plan seleccionado
+                </p>
+              )}
+              {errors.max_students && (
+                <p className="text-red-500 text-[13px] sm:text-sm mt-1.5 ml-1">{errors.max_students}</p>
+              )}
+            </div>
+
+            {/* Error general */}
+            {errors.submit && (
+              <div className="p-3 sm:p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <p className="text-xs sm:text-sm text-red-600 dark:text-red-400">{errors.submit}</p>
+              </div>
+            )}
+
+            {/* Botones */}
+            <div className="flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 pt-2 sm:pt-3">
+              <button
+                type="button"
+                onClick={handleCloseModal}
+                disabled={isSubmitting}
+                className="flex-1 px-4 sm:px-5 py-2.5 sm:py-3 bg-gray-100 dark:bg-[#2a2b2e] hover:bg-gray-200 dark:hover:bg-[#3a3a3c] text-light-text dark:text-dark-text font-medium rounded-lg transition-colors text-[13px] sm:text-sm md:text-[15px] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="flex-1 px-4 sm:px-5 py-2.5 sm:py-3 bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] text-black font-semibold rounded-lg transition-colors text-[13px] sm:text-sm md:text-[15px] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSubmitting ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4 sm:h-5 sm:w-5 text-black" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Creando...</span>
+                  </>
+                ) : (
+                  'Crear Cliente'
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </Modal>
+
+      {/* Toast de notificaciones */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={closeToast}
+        />
+      )}
 
       {/* Modal Cerrar Sesión */}
       <LogoutModal

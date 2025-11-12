@@ -6,7 +6,8 @@ import LogoutModal from '../../components/LogoutModal'
 import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { getData, postData } from '../../services/api'
+import { getParentStudents, getStaffStudents, postData, deleteStudent } from '../../services/api'
+import { normalizeStudentList, denormalizeStudentCreate } from '../../services/normalizers'
 import { validateForm, isRequired } from '../../utils/validation'
 import logger from '../../utils/logger'
 import { useAuth } from '../../context/AuthContext'
@@ -19,6 +20,8 @@ const ParentDashboard = () => {
   const [userName] = useState(user?.name || 'Usuario')
   const [isScrolled, setIsScrolled] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
+  const [studentToDelete, setStudentToDelete] = useState(null)
   const [formData, setFormData] = useState({
     nombre: '',
     escuela: '',
@@ -28,6 +31,7 @@ const ParentDashboard = () => {
   const [hijos, setHijos] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [toast, setToast] = useState(null)
   const containerRef = useRef(null)
   const scrollKey = '/parent'
@@ -71,53 +75,42 @@ const ParentDashboard = () => {
     const fetchHijos = async () => {
       try {
         setIsLoading(true)
-        // Obtener parent id del contexto o localStorage
-        const parentId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
-        if (!parentId) {
-          throw new Error('Parent ID no disponible')
+        // Obtener user id y rol del contexto o localStorage
+        const userId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
+        const userRole = user?.role || JSON.parse(localStorage.getItem('user') || '{}')?.role
+        
+        if (!userId) {
+          throw new Error('User ID no disponible')
         }
 
-        const data = await getData(`/parent/${parentId}/list`)
-        logger.info('Cargando lista de hijos para parent:', parentId)
-        
-        // El backend puede devolver: array directo, o { students: [...] }, o { data: [...] }
-        // Normalizar a array
-        let hijosArray = []
-        if (Array.isArray(data)) {
-          hijosArray = data
-        } else if (data && Array.isArray(data.students)) {
-          hijosArray = data.students
-        } else if (data && Array.isArray(data.data)) {
-          hijosArray = data.data
-        } else if (data && Array.isArray(data.children)) {
-          hijosArray = data.children
+        let data
+        // Usar endpoint correcto según el rol
+        if (userRole === 'staff') {
+          logger.info('Cargando lista de estudiantes para staff:', userId)
+          data = await getStaffStudents(userId)
         } else {
-          logger.warn('Estructura inesperada del backend:', data)
-          hijosArray = []
+          logger.info('Cargando lista de hijos para parent:', userId)
+          data = await getParentStudents(userId)
         }
         
-        // Normalizar campos del backend al formato esperado por el frontend
-        hijosArray = hijosArray.map((hijo, index) => {
-          // Usar índice como ID único ya que el backend no devuelve id
-          const uniqueId = hijo.id || hijo._id || index.toString()
-          
-          return {
-            id: uniqueId,
-            name: hijo.name || hijo.nombre || '',
-            rfid: hijo.rfid_id || hijo.rfid || 'Pendiente',
-            creditos: hijo.credits || hijo.creditos || 0,
-            tope: hijo.tope || hijo.limit || 0,
-            state: hijo.state || false,
-            parent_id: hijo.parent_id || '',
-            school: hijo.school || hijo.escuela || '',
-            course: hijo.course || hijo.curso || ''
-          }
-        })
+        // El backend devuelve array directo de estudiantes
+        // Normalizar usando normalizers
+        const hijosArray = normalizeStudentList(data).map(hijo => ({
+          id: hijo.id,
+          name: hijo.name,
+          rfid: hijo.rfid,
+          creditos: hijo.credits,
+          tope: hijo.tope,
+          state: hijo.state,
+          parent_id: hijo.parentId,
+          school: hijo.school,
+          course: hijo.course
+        }))
         
         setHijos(hijosArray)
-        logger.info('Hijos cargados exitosamente:', hijosArray.length)
+        logger.info('Estudiantes cargados exitosamente:', hijosArray.length)
       } catch (error) {
-        logger.error('Error al cargar hijos:', error)
+        logger.error('Error al cargar estudiantes:', error)
         setHijos([]) // Asegurar que sea array vacío en caso de error
       } finally {
         setIsLoading(false)
@@ -186,64 +179,139 @@ const ParentDashboard = () => {
     try {
       setIsSubmitting(true)
       
-      // Obtener parent id del contexto o localStorage
-      const parentId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
-      if (!parentId) {
-        throw new Error('Parent ID no disponible')
+      // Obtener user id y rol del contexto o localStorage
+      const userId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
+      const userRole = user?.role || JSON.parse(localStorage.getItem('user') || '{}')?.role
+      
+      if (!userId) {
+        throw new Error('User ID no disponible')
       }
       
-      // Preparar datos según lo que espera el backend
-      const studentData = {
-        name: formData.nombre,
-        credits: 0, // Siempre inicia en 0
-        parent_id: parentId,
-        school: formData.escuela,
-        course: formData.curso
+      // Preparar datos usando denormalizer
+      // Para staff, se usa staff_id en lugar de parent_id
+      const studentData = userRole === 'staff' 
+        ? denormalizeStudentCreate({
+            name: formData.nombre,
+            credits: 0,
+            staffId: userId,
+            school: formData.escuela,
+            course: formData.curso
+          })
+        : denormalizeStudentCreate({
+            name: formData.nombre,
+            credits: 0,
+            parentId: userId,
+            school: formData.escuela,
+            course: formData.curso
+          })
+      
+      logger.info('Datos a enviar:', { userRole, userId, studentData })
+      
+      // Agregar owner_type como query parameter
+      const ownerType = userRole === 'staff' ? 'staff' : 'parent'
+      const response = await postData(`/students?owner_type=${ownerType}`, studentData)
+      logger.info('Estudiante creado exitosamente:', response)
+      
+      logger.event('STUDENT_ADDED', { nombre: formData.nombre, role: userRole })
+      
+      // Recargar lista de estudiantes usando endpoint correcto según rol
+      let data
+      if (userRole === 'staff') {
+        data = await getStaffStudents(userId)
+      } else {
+        data = await getParentStudents(userId)
       }
       
-      const response = await postData('/students/', studentData)
-      logger.info('Hijo creado exitosamente:', response)
-      
-      logger.event('CHILD_ADDED', { nombre: formData.nombre })
-      
-      // Recargar lista de hijos
-      const data = await getData(`/parent/${parentId}/list`)
-      
-      // Normalizar respuesta
-      let hijosArray = []
-      if (Array.isArray(data)) {
-        hijosArray = data
-      } else if (data && Array.isArray(data.students)) {
-        hijosArray = data.students
-      } else if (data && Array.isArray(data.data)) {
-        hijosArray = data.data
-      } else if (data && Array.isArray(data.children)) {
-        hijosArray = data.children
-      }
-      
-      // Normalizar campos del backend (usar índice como id para consistencia)
-      hijosArray = hijosArray.map((hijo, index) => ({
-        id: hijo.id || hijo._id || index.toString(),
-        name: hijo.name || hijo.nombre || '',
-        rfid: hijo.rfid_id || hijo.rfid || 'Pendiente',
-        creditos: hijo.credits || hijo.creditos || 0,
-        tope: hijo.tope || hijo.limit || 0,
-        state: hijo.state || false,
-        parent_id: hijo.parent_id || '',
-        school: hijo.school || hijo.escuela || '',
-        course: hijo.course || hijo.curso || ''
+      // Normalizar usando normalizers
+      const hijosArray = normalizeStudentList(data).map(hijo => ({
+        id: hijo.id,
+        name: hijo.name,
+        rfid: hijo.rfid,
+        creditos: hijo.credits,
+        tope: hijo.tope,
+        state: hijo.state,
+        parent_id: hijo.parentId,
+        school: hijo.school,
+        course: hijo.course
       }))
       
       setHijos(hijosArray)
       
       handleCloseModal()
-      showToast('Hijo agregado exitosamente', 'success')
+      showToast(userRole === 'staff' ? 'Estudiante agregado exitosamente' : 'Hijo agregado exitosamente', 'success')
     } catch (error) {
-      logger.error('Error al agregar hijo:', error)
-      showToast(error.response?.data?.message || 'Error al agregar el hijo', 'error')
-      setErrors({ submit: 'Error al agregar el hijo. Intenta nuevamente.' })
+      logger.error('Error al agregar estudiante:', error)
+      showToast(error.response?.data?.message || 'Error al agregar el estudiante', 'error')
+      setErrors({ submit: 'Error al agregar el estudiante. Intenta nuevamente.' })
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  // Funciones para modal de eliminación
+  const openDeleteModal = (student) => {
+    setStudentToDelete(student)
+    setIsDeleteModalOpen(true)
+  }
+
+  const closeDeleteModal = () => {
+    setIsDeleteModalOpen(false)
+    setStudentToDelete(null)
+  }
+
+  const handleDeleteStudent = async () => {
+    if (!studentToDelete) return
+
+    try {
+      setIsDeleting(true)
+      
+      logger.info('=== ELIMINANDO ESTUDIANTE ===')
+      logger.info('ID:', studentToDelete.id)
+      logger.info('RFID:', studentToDelete.rfid)
+      logger.info('Nombre:', studentToDelete.name)
+
+      // Eliminar por ID numérico, no por RFID
+      await deleteStudent(studentToDelete.id)
+      
+      logger.event('STUDENT_DELETED', { 
+        id: studentToDelete.id,
+        rfid: studentToDelete.rfid, 
+        name: studentToDelete.name 
+      })
+      logger.info('=== ELIMINACIÓN COMPLETADA ===')
+
+      // Recargar lista de hijos
+      const parentId = user?.id || JSON.parse(localStorage.getItem('user') || '{}')?.id
+      if (parentId) {
+        const data = await getParentStudents(parentId)
+        const hijosArray = normalizeStudentList(data).map(hijo => ({
+          id: hijo.id,
+          name: hijo.name,
+          rfid: hijo.rfid,
+          creditos: hijo.credits,
+          tope: hijo.tope,
+          state: hijo.state,
+          parent_id: hijo.parentId,
+          school: hijo.school,
+          course: hijo.course
+        }))
+        setHijos(hijosArray)
+      }
+
+      showToast('Hijo eliminado exitosamente', 'success')
+      closeDeleteModal()
+    } catch (error) {
+      logger.error('=== ERROR EN ELIMINACIÓN ===')
+      logger.error('Error completo:', error)
+      logger.error('Response data:', error.response?.data)
+      logger.error('Response status:', error.response?.status)
+      
+      showToast(
+        error.response?.data?.message || 'Error al eliminar el hijo',
+        'error'
+      )
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -337,31 +405,55 @@ const ParentDashboard = () => {
                   </div>
                 </div>
                 
-                {/* Botón de configuración */}
-                <Link 
-                  to={`/parent/child/${hijo.id}`}
-                  className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] flex items-center justify-center transition-all duration-200 group/btn flex-shrink-0 ml-2 shadow-sm hover:shadow-md"
-                  aria-label="Configurar hijo"
-                >
-                  <svg 
-                    className="w-5 h-5 text-black group-hover/btn:rotate-90 transition-transform duration-300" 
-                    fill="none" 
-                    stroke="currentColor" 
-                    viewBox="0 0 24 24"
-                    strokeWidth={2}
+                {/* Botones de acción */}
+                <div className="flex items-center gap-2">
+                  {/* Botón de configuración */}
+                  <Link 
+                    to={user?.role === 'staff' ? `/staff/student/${hijo.id}` : `/parent/child/${hijo.id}`}
+                    className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] flex items-center justify-center transition-all duration-200 group/btn flex-shrink-0 shadow-sm hover:shadow-md"
+                    aria-label={user?.role === 'staff' ? 'Configurar estudiante' : 'Configurar hijo'}
                   >
-                    <path 
-                      strokeLinecap="round" 
-                      strokeLinejoin="round"
-                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" 
-                    />
-                    <path 
-                      strokeLinecap="round" 
-                      strokeLinejoin="round"
-                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" 
-                    />
-                  </svg>
-                </Link>
+                    <svg 
+                      className="w-5 h-5 text-black group-hover/btn:rotate-90 transition-transform duration-300" 
+                      fill="none" 
+                      stroke="currentColor" 
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                    >
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" 
+                      />
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round"
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" 
+                      />
+                    </svg>
+                  </Link>
+
+                  {/* Botón de eliminar */}
+                  <button
+                    onClick={() => openDeleteModal(hijo)}
+                    className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-red-500 hover:bg-red-600 active:bg-red-700 flex items-center justify-center transition-all duration-200 group/btn flex-shrink-0 shadow-sm hover:shadow-md"
+                    aria-label="Eliminar hijo"
+                  >
+                    <svg 
+                      className="w-5 h-5 text-white group-hover/btn:scale-110 transition-transform duration-200" 
+                      fill="none" 
+                      stroke="currentColor" 
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                    >
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round"
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" 
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               {/* Info grid */}
@@ -389,11 +481,11 @@ const ParentDashboard = () => {
           ))}
         </div>
 
-        {/* Botón flotante para agregar hijo */}
+        {/* Botón flotante para agregar hijo/estudiante */}
         <button
           onClick={handleAddChild}
           className="fixed right-4 bottom-4 sm:right-6 sm:bottom-6 md:right-8 md:bottom-8 w-14 h-14 sm:w-15 sm:h-15 md:w-16 md:h-16 bg-[#FDB913] hover:bg-[#fcc000] active:bg-[#e5a711] rounded-full flex items-center justify-center transition-[transform,box-shadow,background-color,rotate] duration-300 hover:scale-110 active:scale-105 hover:rotate-90 z-50 shadow-lg hover:shadow-xl"
-          aria-label="Agregar hijo"
+          aria-label={user?.role === 'staff' ? 'Agregar estudiante' : 'Agregar hijo'}
         >
           <svg 
             className="w-7 h-7 sm:w-[30px] sm:h-[30px] md:w-8 md:h-8 text-black" 
@@ -411,7 +503,7 @@ const ParentDashboard = () => {
         </button>
       </main>
 
-      {/* Modal para agregar hijo */}
+      {/* Modal para agregar hijo/estudiante */}
       <Modal 
         isOpen={isModalOpen} 
         onClose={handleCloseModal}
@@ -419,7 +511,9 @@ const ParentDashboard = () => {
       >
         <div className="space-y-5 sm:space-y-5 md:space-y-6">
           <p className="text-light-text-secondary dark:text-gray-400 text-[13px] sm:text-sm leading-relaxed">
-            Rellene los campos para registrar a su hijo
+            {user?.role === 'staff' 
+              ? 'Rellene los campos para registrar un estudiante' 
+              : 'Rellene los campos para registrar a su hijo'}
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5">
@@ -529,6 +623,53 @@ const ParentDashboard = () => {
               )}
             </button>
           </form>
+        </div>
+      </Modal>
+
+      {/* Modal de confirmación para eliminar hijo */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={closeDeleteModal}
+        title="Confirmar eliminación"
+      >
+        <div className="p-2 sm:p-3">
+          {studentToDelete && (
+            <>
+              <p className="text-light-text dark:text-dark-text text-[15px] sm:text-base mb-4">
+                ¿Estás seguro de que deseas eliminar a <span className="font-bold">{studentToDelete.name}</span>?
+              </p>
+              <p className="text-light-text-secondary dark:text-gray-400 text-sm mb-6">
+                Esta acción no se puede deshacer y se eliminarán todos los datos asociados.
+              </p>
+              
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={closeDeleteModal}
+                  disabled={isDeleting}
+                  className="px-5 py-2.5 bg-gray-200 dark:bg-[#2a2a2c] hover:bg-gray-300 dark:hover:bg-[#3a3a3c] text-light-text dark:text-dark-text rounded-lg transition-all duration-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleDeleteStudent}
+                  disabled={isDeleting}
+                  className="px-5 py-2.5 bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-all duration-200 font-medium flex items-center gap-2"
+                >
+                  {isDeleting ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Eliminando...
+                    </>
+                  ) : (
+                    'Eliminar'
+                  )}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
 

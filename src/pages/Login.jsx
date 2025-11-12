@@ -82,11 +82,18 @@ const Login = () => {
 
       // El token ya se guarda automáticamente en la función login() del servicio
       // Normalizar y guardar información adicional del usuario en localStorage
+      
+      // Normalizar el rol: el backend devuelve "client" pero internamente usamos "client_admin"
+      let normalizedRole = response.rol || response.role
+      if (normalizedRole === 'client') {
+        normalizedRole = 'client_admin'
+      }
+      
       const userData = {
         id: response.id,
         // Backend devuelve 'rol' en español; crear also 'role' para compatibilidad
-        rol: response.rol || response.role,
-        role: response.rol || response.role,
+        rol: normalizedRole,
+        role: normalizedRole,
         email: formData.correo,
         // Si el backend devuelve nombre, úsalo, sino vacío
         name: response.name || response.user?.name || ''
@@ -103,10 +110,11 @@ const Login = () => {
         super_admin: '/super-admin',
         client_admin: '/client-admin',
         branch: '/branch',
-        parent: '/parent'
+        parent: '/parent',
+        staff: '/staff'
       }
 
-      const route = dashboardRoutes[response.rol] || '/parent'
+      const route = dashboardRoutes[normalizedRole] || '/parent'
       navigate(route)
       
     } catch (error) {

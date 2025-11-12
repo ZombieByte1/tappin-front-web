@@ -6,7 +6,8 @@ import LogoutModal from '../../components/LogoutModal'
 import Toast from '../../components/Toast'
 import { useScroll } from '../../context/ScrollContext'
 import { useLogout } from '../../hooks/useLogout'
-import { getData, postData, patchData, updateData, deleteData } from '../../services/api'
+import { getData, postData, patchData, updateData, deleteData, getBranchParents, getBranchMembers, createStaff, updateStaff, deleteStaff } from '../../services/api'
+import { normalizeParentList, denormalizeParentCreate, denormalizeParentUpdate } from '../../services/normalizers'
 import { validateForm, isRequired, isValidEmail, isValidPassword } from '../../utils/validation'
 import logger from '../../utils/logger'
 
@@ -16,10 +17,13 @@ const PadresBranch = () => {
   const { saveScroll, getScroll } = useScroll()
   const { isLogoutModalOpen, openLogoutModal, closeLogoutModal, confirmLogout } = useLogout()
   const [isScrolled, setIsScrolled] = useState(false)
+  const [isRoleSelectionModalOpen, setIsRoleSelectionModalOpen] = useState(false)
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [selectedPadre, setSelectedPadre] = useState(null)
+  const [selectedRole, setSelectedRole] = useState(null) // 'parent' o 'staff'
+  const [roleFilter, setRoleFilter] = useState('all') // 'all', 'parent', 'staff'
   const [showPassword, setShowPassword] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [formData, setFormData] = useState({
@@ -29,6 +33,7 @@ const PadresBranch = () => {
   })
   const [errors, setErrors] = useState({})
   const [padres, setPadres] = useState([])
+  const [staff, setStaff] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [toast, setToast] = useState(null)
@@ -68,9 +73,9 @@ const PadresBranch = () => {
     return () => container.removeEventListener('scroll', handleScroll)
   }, [])
 
-  // Cargar padres del backend
+  // Cargar padres y staff del backend
   useEffect(() => {
-    const fetchPadres = async () => {
+    const fetchData = async () => {
       try {
         setIsLoading(true)
         
@@ -82,56 +87,62 @@ const PadresBranch = () => {
           throw new Error('Sucursal ID no disponible')
         }
         
-        // Llamar al endpoint GET /branch/{sucursal_id}/list
-        const data = await getData(`/branch/${sucursalId}/list`)
-        logger.info('Cargando padres para sucursal:', sucursalId)
+        // Cargar todos los miembros (padres y staff) con el nuevo endpoint
+        // Endpoint GET /branch/{sucursal_id}/members
+        const membersData = await getBranchMembers(sucursalId)
+        logger.info('Cargando miembros para sucursal:', sucursalId)
+        logger.info('Respuesta del servidor:', membersData)
         
-        // Normalizar respuesta
-        let padresArray = []
-        if (Array.isArray(data)) {
-          padresArray = data
-        } else if (data && Array.isArray(data.data)) {
-          padresArray = data.data
-        } else if (data && Array.isArray(data.parents)) {
-          padresArray = data.parents
-        } else if (data && Array.isArray(data.parent)) {
-          padresArray = data.parent
-        }
-        
-        // Normalizar campos de cada padre
-        padresArray = padresArray.map((padre, index) => ({
-          id: padre.id || padre._id || index.toString(),
-          nombre: padre.name || padre.nombre || '',
-          email: padre.email || '',
-          // Agregar otros campos que el backend devuelva
-          ...padre
+        // La respuesta tiene formato: { parents: Array(1), staff: Array(1), total: 2, total_parents: 1, total_staff: 1 }
+        const parentsArray = (membersData.parents || []).map(padre => ({
+          id: padre.id,
+          nombre: padre.name,
+          email: padre.email,
+          rol: 'parent'
         }))
         
-        setPadres(padresArray)
-        logger.info('Padres cargados exitosamente:', padresArray.length)
+        const staffArray = (membersData.staff || []).map(staffMember => ({
+          id: staffMember.id,
+          nombre: staffMember.name,
+          email: staffMember.email,
+          rol: 'staff'
+        }))
+        
+        setPadres(parentsArray)
+        setStaff(staffArray)
+        logger.info('Padres cargados:', parentsArray.length, '| Staff cargados:', staffArray.length)
       } catch (error) {
-        logger.error('Error al cargar padres:', error)
+        logger.error('Error al cargar datos:', error)
         setPadres([])
+        setStaff([])
       } finally {
         setIsLoading(false)
       }
     }
 
-    fetchPadres()
+    fetchData()
   }, [])
 
   const handleAddPadre = () => {
+    // Abrir modal de selección de rol primero
+    setIsRoleSelectionModalOpen(true)
+  }
+
+  const handleRoleSelected = (role) => {
+    setSelectedRole(role)
+    setIsRoleSelectionModalOpen(false)
     setFormData({ nombre: '', email: '', password: '' })
     setErrors({})
     setShowPassword(false)
     setIsAddModalOpen(true)
   }
 
-  const handleEditPadre = (padre) => {
-    setSelectedPadre(padre)
+  const handleEditPadre = (persona) => {
+    setSelectedPadre(persona)
+    setSelectedRole(persona.rol) // 'parent' o 'staff'
     setFormData({
-      nombre: padre.nombre,
-      email: padre.email,
+      nombre: persona.nombre,
+      email: persona.email,
       password: ''
     })
     setErrors({})
@@ -139,9 +150,14 @@ const PadresBranch = () => {
     setIsEditModalOpen(true)
   }
 
-  const handleDeletePadre = (padre) => {
-    setSelectedPadre(padre)
+  const handleDeletePadre = (persona) => {
+    setSelectedPadre(persona)
     setIsDeleteModalOpen(true)
+  }
+
+  const handleCloseRoleSelectionModal = () => {
+    setIsRoleSelectionModalOpen(false)
+    setSelectedRole(null) // Limpiar rol seleccionado al cerrar
   }
 
   const handleCloseAddModal = () => {
@@ -149,6 +165,10 @@ const PadresBranch = () => {
     setFormData({ nombre: '', email: '', password: '' })
     setErrors({})
     setShowPassword(false)
+    // Limpiar selectedRole después de que termine la animación del modal (300ms)
+    setTimeout(() => {
+      setSelectedRole(null)
+    }, 300)
   }
 
   const handleCloseEditModal = () => {
@@ -157,11 +177,38 @@ const PadresBranch = () => {
     setFormData({ nombre: '', email: '', password: '' })
     setErrors({})
     setShowPassword(false)
+    // Limpiar selectedRole después de que termine la animación del modal (300ms)
+    setTimeout(() => {
+      setSelectedRole(null)
+    }, 300)
   }
 
   const handleCloseDeleteModal = () => {
     setIsDeleteModalOpen(false)
     setSelectedPadre(null)
+  }
+
+  // Función helper para recargar miembros desde el endpoint unificado
+  const reloadMembers = async (branchId) => {
+    const membersData = await getBranchMembers(branchId)
+    
+    // La respuesta tiene formato: { parents: Array, staff: Array, ... }
+    const parentsArray = (membersData.parents || []).map(padre => ({
+      id: padre.id,
+      nombre: padre.name,
+      email: padre.email,
+      rol: 'parent'
+    }))
+    
+    const staffArray = (membersData.staff || []).map(staffMember => ({
+      id: staffMember.id,
+      nombre: staffMember.name,
+      email: staffMember.email,
+      rol: 'staff'
+    }))
+    
+    setPadres(parentsArray)
+    setStaff(staffArray)
   }
 
   const handleInputChange = (e) => {
@@ -214,50 +261,41 @@ const PadresBranch = () => {
       if (!branchId) {
         throw new Error('Branch ID no disponible')
       }
-      
-      // Preparar datos para el backend
-      const parentData = {
-        name: formData.nombre,
-        email: formData.email,
-        password: formData.password,
-        branch_id: branchId
+
+      if (selectedRole === 'parent') {
+        // Crear padre - Usar denormalizer para preparar datos
+        const parentData = denormalizeParentCreate({
+          name: formData.nombre,
+          email: formData.email,
+          password: formData.password,
+          branchId: branchId
+        })
+        
+        // Llamar al endpoint POST /parent/
+        await postData('/parent/', parentData)
+        showToast('Padre agregado exitosamente', 'success')
+      } else if (selectedRole === 'staff') {
+        // Crear staff
+        const staffData = {
+          name: formData.nombre,
+          email: formData.email,
+          password: formData.password,
+          branch_id: branchId
+        }
+        
+        // Llamar al endpoint POST /staff/
+        await createStaff(staffData)
+        showToast('Staff agregado exitosamente', 'success')
       }
       
-      // Llamar al endpoint POST /parent/
-      await postData('/parent/', parentData)
+      // Recargar lista completa usando el endpoint unificado
+      await reloadMembers(branchId)
       
-      logger.event('PARENT_CREATED', { email: formData.email })
-      
-      // Recargar lista de padres
-      const data = await getData(`/branch/${branchId}/list`)
-      
-      // Normalizar respuesta
-      let padresArray = []
-      if (Array.isArray(data)) {
-        padresArray = data
-      } else if (data && Array.isArray(data.data)) {
-        padresArray = data.data
-      } else if (data && Array.isArray(data.parents)) {
-        padresArray = data.parents
-      } else if (data && Array.isArray(data.parent)) {
-        padresArray = data.parent
-      }
-      
-      // Normalizar campos
-      padresArray = padresArray.map((padre, index) => ({
-        id: padre.id || padre._id || index.toString(),
-        nombre: padre.name || padre.nombre || '',
-        email: padre.email || '',
-        ...padre
-      }))
-      
-      setPadres(padresArray)
       handleCloseAddModal()
-      showToast('Padre creado exitosamente', 'success')
     } catch (error) {
-      logger.error('Error al crear padre:', error)
-      showToast(error.response?.data?.message || 'Error al crear el padre', 'error')
-      setErrors({ submit: 'Error al crear el padre. Intenta nuevamente.' })
+      logger.error(`Error al agregar ${selectedRole === 'parent' ? 'padre' : 'staff'}:`, error)
+      const errorMessage = error.response?.data?.detail || `Error al agregar ${selectedRole === 'parent' ? 'padre' : 'staff'}`
+      showToast(errorMessage, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -278,50 +316,41 @@ const PadresBranch = () => {
       if (!branchId) {
         throw new Error('Branch ID no disponible')
       }
-      
-      // Preparar datos para actualizar - el backend requiere todos los campos
-      const updateParentData = {
-        name: formData.nombre,
-        email: formData.email,
-        password: formData.password || selectedPadre.password || '' // Usar la nueva contraseña o mantener la actual
+
+      if (selectedRole === 'parent') {
+        // Actualizar padre
+        const updateParentData = denormalizeParentUpdate({
+          name: formData.nombre,
+          email: formData.email,
+          password: formData.password || selectedPadre.password || undefined
+        })
+        
+        await patchData(`/parent/${selectedPadre.id}`, updateParentData)
+        showToast('Padre actualizado exitosamente', 'success')
+      } else if (selectedRole === 'staff') {
+        // Actualizar staff
+        const updateStaffData = {
+          name: formData.nombre,
+          email: formData.email
+        }
+        
+        // Solo incluir password si se proporcionó uno nuevo
+        if (formData.password) {
+          updateStaffData.password = formData.password
+        }
+        
+        await updateStaff(selectedPadre.id, updateStaffData)
+        showToast('Staff actualizado exitosamente', 'success')
       }
       
+      // Recargar lista completa usando el endpoint unificado
+      await reloadMembers(branchId)
       
-      // Llamar al endpoint PATCH /parent/{id}
-      await patchData(`/parent/${selectedPadre.id}`, updateParentData)
-      
-      logger.event('PARENT_UPDATED', { id: selectedPadre.id })
-      
-      // Recargar lista de padres
-      const data = await getData(`/branch/${branchId}/list`)
-      
-      // Normalizar respuesta
-      let padresArray = []
-      if (Array.isArray(data)) {
-        padresArray = data
-      } else if (data && Array.isArray(data.data)) {
-        padresArray = data.data
-      } else if (data && Array.isArray(data.parents)) {
-        padresArray = data.parents
-      } else if (data && Array.isArray(data.parent)) {
-        padresArray = data.parent
-      }
-      
-      // Normalizar campos
-      padresArray = padresArray.map((padre, index) => ({
-        id: padre.id || padre._id || index.toString(),
-        nombre: padre.name || padre.nombre || '',
-        email: padre.email || '',
-        ...padre
-      }))
-      
-      setPadres(padresArray)
       handleCloseEditModal()
-      showToast('Padre actualizado exitosamente', 'success')
     } catch (error) {
-      logger.error('Error al actualizar padre:', error)
-      showToast(error.response?.data?.message || 'Error al actualizar el padre', 'error')
-      setErrors({ submit: 'Error al actualizar el padre. Intenta nuevamente.' })
+      logger.error(`Error al actualizar ${selectedRole === 'parent' ? 'padre' : 'staff'}:`, error)
+      const errorMessage = error.response?.data?.detail || `Error al actualizar ${selectedRole === 'parent' ? 'padre' : 'staff'}`
+      showToast(errorMessage, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -338,43 +367,27 @@ const PadresBranch = () => {
       if (!branchId) {
         throw new Error('Branch ID no disponible')
       }
-      
-      
-      // Llamar al endpoint DELETE /parent/{id}
-      await deleteData(`/parent/${selectedPadre.id}`)
-      
-      logger.event('PARENT_DELETED', { id: selectedPadre.id })
-      
-      // Recargar lista de padres
-      const data = await getData(`/branch/${branchId}/list`)
-      
-      // Normalizar respuesta
-      let padresArray = []
-      if (Array.isArray(data)) {
-        padresArray = data
-      } else if (data && Array.isArray(data.data)) {
-        padresArray = data.data
-      } else if (data && Array.isArray(data.parents)) {
-        padresArray = data.parents
-      } else if (data && Array.isArray(data.parent)) {
-        padresArray = data.parent
+
+      const roleToDelete = selectedPadre.rol
+
+      if (roleToDelete === 'parent') {
+        // Eliminar padre
+        await deleteData(`/parent/${selectedPadre.id}`)
+        showToast('Padre eliminado exitosamente', 'success')
+      } else if (roleToDelete === 'staff') {
+        // Eliminar staff
+        await deleteStaff(selectedPadre.id)
+        showToast('Staff eliminado exitosamente', 'success')
       }
       
-      // Normalizar campos
-      padresArray = padresArray.map((padre, index) => ({
-        id: padre.id || padre._id || index.toString(),
-        nombre: padre.name || padre.nombre || '',
-        email: padre.email || '',
-        ...padre
-      }))
+      // Recargar lista completa usando el endpoint unificado
+      await reloadMembers(branchId)
       
-      setPadres(padresArray)
       handleCloseDeleteModal()
-      showToast('Padre eliminado exitosamente', 'success')
     } catch (error) {
-      logger.error('Error al eliminar padre:', error)
-      showToast(error.response?.data?.message || 'Error al eliminar el padre', 'error')
-      // Aquí podrías mostrar un mensaje de error al usuario
+      logger.error(`Error al eliminar ${selectedPadre?.rol === 'parent' ? 'padre' : 'staff'}:`, error)
+      const errorMessage = error.response?.data?.detail || `Error al eliminar ${selectedPadre?.rol === 'parent' ? 'padre' : 'staff'}`
+      showToast(errorMessage, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -392,11 +405,20 @@ const PadresBranch = () => {
     setSearchTerm(e.target.value)
   }
 
-  // Filtrar padres en tiempo real
-  const filteredPadres = padres.filter((padre) => {
+  // Combinar padres y staff en una sola lista
+  const allPersonas = [...padres, ...staff]
+
+  // Filtrar personas (padres + staff) en tiempo real
+  const filteredPadres = allPersonas.filter((persona) => {
+    // Filtro por rol
+    if (roleFilter !== 'all' && persona.rol !== roleFilter) {
+      return false
+    }
+    
+    // Filtro por búsqueda
     const searchLower = searchTerm.toLowerCase()
-    const nombreMatch = padre.nombre.toLowerCase().includes(searchLower)
-    const emailMatch = padre.email.toLowerCase().includes(searchLower)
+    const nombreMatch = persona.nombre.toLowerCase().includes(searchLower)
+    const emailMatch = persona.email.toLowerCase().includes(searchLower)
     return nombreMatch || emailMatch
   })
 
@@ -437,7 +459,7 @@ const PadresBranch = () => {
                 <img src={logoTappin} alt="Tappin Logo" className="w-8 h-8 sm:w-10 sm:h-10 object-contain flex-shrink-0" />
                 <div className="min-w-0">
                   <h1 className="text-light-text dark:text-dark-text text-base sm:text-lg md:text-xl font-bold truncate">
-                    Tappin - Sucursal
+                    Padres - Staff
                   </h1>
                 </div>
               </div>
@@ -480,7 +502,7 @@ const PadresBranch = () => {
 
           {/* Subtítulo */}
           <h3 className="text-light-text dark:text-dark-text text-base sm:text-lg md:text-xl font-semibold mb-4 sm:mb-5 md:mb-6">
-            Lista de padres
+            Lista de padres y staff
           </h3>
 
           {/* Buscador */}
@@ -528,6 +550,41 @@ const PadresBranch = () => {
                 </button>
               )}
             </div>
+            
+            {/* Botones de filtro por rol */}
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => setRoleFilter('all')}
+                className={`flex-1 px-4 py-2 sm:py-2.5 rounded-lg text-sm sm:text-base font-semibold transition-all duration-200 ${
+                  roleFilter === 'all'
+                    ? 'bg-[#FDB913] text-black shadow-md'
+                    : 'bg-gray-100 dark:bg-[#2a2b2e] text-light-text dark:text-dark-text hover:bg-gray-200 dark:hover:bg-[#3a3a3c]'
+                }`}
+              >
+                Todos ({padres.length + staff.length})
+              </button>
+              <button
+                onClick={() => setRoleFilter('parent')}
+                className={`flex-1 px-4 py-2 sm:py-2.5 rounded-lg text-sm sm:text-base font-semibold transition-all duration-200 ${
+                  roleFilter === 'parent'
+                    ? 'bg-orange-500 text-white shadow-md'
+                    : 'bg-gray-100 dark:bg-[#2a2b2e] text-light-text dark:text-dark-text hover:bg-gray-200 dark:hover:bg-[#3a3a3c]'
+                }`}
+              >
+                Padres ({padres.length})
+              </button>
+              <button
+                onClick={() => setRoleFilter('staff')}
+                className={`flex-1 px-4 py-2 sm:py-2.5 rounded-lg text-sm sm:text-base font-semibold transition-all duration-200 ${
+                  roleFilter === 'staff'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'bg-gray-100 dark:bg-[#2a2b2e] text-light-text dark:text-dark-text hover:bg-gray-200 dark:hover:bg-[#3a3a3c]'
+                }`}
+              >
+                Staff ({staff.length})
+              </button>
+            </div>
+            
             {/* Contador de resultados */}
             {searchTerm && (
               <p className="text-light-text-secondary dark:text-gray-400 text-xs sm:text-sm mt-2 ml-1">
@@ -536,7 +593,7 @@ const PadresBranch = () => {
             )}
           </div>
 
-          {/* Lista de padres */}
+          {/* Lista de padres y staff */}
           <div className="space-y-3 sm:space-y-4">
             {isLoading ? (
               <div className="flex justify-center items-center py-12 sm:py-16">
@@ -545,20 +602,27 @@ const PadresBranch = () => {
             ) : filteredPadres.length > 0 ? (
               filteredPadres.map((padre) => (
                 <div
-                  key={padre.id}
+                  key={`${padre.rol}-${padre.id}`}
                   className="bg-white dark:bg-[#2a2b2e] rounded-xl sm:rounded-2xl p-4 sm:p-5 md:p-6 border border-gray-200 dark:border-[#3a3a3c] transition-all duration-200 animate-slideIn"
                 >
                   <div className="flex items-start justify-between gap-3 sm:gap-4">
                     <div className="flex-1 min-w-0">
-                      <h4 className="text-light-text dark:text-dark-text text-[15px] sm:text-base md:text-lg font-semibold mb-1 sm:mb-1.5 md:mb-2 truncate">
-                        {padre.nombre}
-                      </h4>
+                      <div className="flex items-center gap-2 mb-1 sm:mb-1.5 md:mb-2">
+                        <h4 className="text-light-text dark:text-dark-text text-[15px] sm:text-base md:text-lg font-semibold truncate">
+                          {padre.nombre}
+                        </h4>
+                        {/* Badge de Rol */}
+                        <span className={`px-2 py-0.5 text-[10px] sm:text-xs font-semibold rounded-full flex-shrink-0 ${
+                          padre.rol === 'staff' 
+                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
+                            : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                        }`}>
+                          {padre.rol === 'staff' ? 'Staff' : 'Padre'}
+                        </span>
+                      </div>
                       <div className="space-y-0.5 sm:space-y-1">
-                        <p className="text-light-text-secondary dark:text-gray-400 text-xs sm:text-[13px] md:text-sm">
-                          ID: <span className="font-mono">{padre.id}</span>
-                        </p>
                         <p className="text-light-text-secondary dark:text-gray-400 text-xs sm:text-[13px] md:text-sm break-all">
-                          Correo: {padre.email}
+                          {padre.email}
                         </p>
                       </div>
                     </div>
@@ -658,11 +722,75 @@ const PadresBranch = () => {
         </button>
       </div>
 
-      {/* Modal Agregar Padre */}
+      {/* Modal Selección de Rol */}
+      <Modal 
+        isOpen={isRoleSelectionModalOpen} 
+        onClose={handleCloseRoleSelectionModal}
+        title="Seleccionar tipo"
+        showCloseButton={true}
+        showIcon={false}
+      >
+        <div className="space-y-4">
+          <p className="text-light-text-secondary dark:text-gray-400 text-sm text-center">
+            ¿Qué tipo de usuario deseas agregar?
+          </p>
+
+          {/* Cuadros en disposición horizontal */}
+          <div className="grid grid-cols-2 gap-4">
+            {/* Cuadro Padre - Izquierda */}
+            <button
+              type="button"
+              onClick={() => handleRoleSelected('parent')}
+              className="bg-[#FDB913] hover:bg-[#fcc000] rounded-lg p-6 transition-all duration-200 flex flex-col items-center justify-center gap-3 hover:shadow-lg"
+            >
+              <div className="w-16 h-16 rounded-full bg-black/10 flex items-center justify-center">
+                <svg 
+                  className="w-8 h-8 text-black" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round"
+                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" 
+                  />
+                </svg>
+              </div>
+              <span className="text-black font-semibold text-base">Padre</span>
+            </button>
+
+            {/* Cuadro Staff - Derecha */}
+            <button
+              type="button"
+              onClick={() => handleRoleSelected('staff')}
+              className="bg-[#FDB913] hover:bg-[#fcc000] rounded-lg p-6 transition-all duration-200 flex flex-col items-center justify-center gap-3 hover:shadow-lg"
+            >
+              <div className="w-16 h-16 rounded-full bg-black/10 flex items-center justify-center">
+                <svg 
+                  className="w-8 h-8 text-black" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                >
+                  <path 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round"
+                    d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" 
+                  />
+                </svg>
+              </div>
+              <span className="text-black font-semibold text-base">Staff</span>
+            </button>
+          </div>
+        </div>
+      </Modal>      {/* Modal Agregar Padre/Staff */}
       <Modal 
         isOpen={isAddModalOpen} 
         onClose={handleCloseAddModal}
-        title="Agregar padre"
+        title={`Agregar ${selectedRole === 'staff' ? 'staff' : 'padre'}`}
       >
         <form onSubmit={handleAddSubmit} className="space-y-4 sm:space-y-5">
           {/* Campo Nombre */}
@@ -788,11 +916,11 @@ const PadresBranch = () => {
         </form>
       </Modal>
 
-      {/* Modal Editar Padre */}
+      {/* Modal Editar Padre/Staff */}
       <Modal 
         isOpen={isEditModalOpen} 
         onClose={handleCloseEditModal}
-        title="Editar padre"
+        title={`Editar ${selectedRole === 'staff' ? 'staff' : 'padre'}`}
       >
         <form onSubmit={handleEditSubmit} className="space-y-4 sm:space-y-5">
           {/* Campo Nombre */}
@@ -946,12 +1074,12 @@ const PadresBranch = () => {
 
           {/* Título */}
           <h3 className="text-light-text dark:text-dark-text text-xl sm:text-2xl font-bold mb-3 sm:mb-4">
-            ¿Eliminar padre?
+            ¿Eliminar {selectedPadre?.rol === 'staff' ? 'staff' : 'padre'}?
           </h3>
 
           {/* Descripción */}
           <p className="text-light-text-secondary dark:text-gray-400 text-sm sm:text-[15px] mb-6 sm:mb-7 leading-relaxed">
-            Esta acción no se puede deshacer. Se eliminará permanentemente el padre{' '}
+            Esta acción no se puede deshacer. Se eliminará permanentemente {selectedPadre?.rol === 'staff' ? 'el staff' : 'el padre'}{' '}
             <span className="font-semibold text-light-text dark:text-dark-text">
               {selectedPadre?.nombre}
             </span>
